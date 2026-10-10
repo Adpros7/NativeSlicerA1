@@ -14,11 +14,11 @@
 - [x] P0-010: Investigate A1 camera capabilities. See RESEARCH-P0-010.md.
 - [x] P0-011: Generate feature-parity matrix. See RESEARCH-P0-011.md.
 - [x] P0-012: Finalize application architecture. See ARCHITECTURE.md.
-- [ ] P0-013: Establish build and testing infrastructure.
+- [x] P0-013: Establish build and testing infrastructure. SwiftPM package (`swift build`/`swift test`), verified app launches.
 
 ## Phase 1: Application Foundation
 
-- [ ] P1-001: Create native macOS application.
+- [x] P1-001: Create native macOS application. SwiftUI skeleton app, builds and launches (`Sources/NativeSlicerA1`).
 - [ ] P1-002: Implement Metal viewport.
 - [ ] P1-003: Integrate established slicing engine.
 - [ ] P1-004: Implement STL importing.
