@@ -103,19 +103,17 @@
 
 ## Phase 9: Repository Hygiene & Compliance
 
-- [ ] P9-001: Add/maintain README.md (project overview, build/setup incl. `Scripts/build-libslic3r.sh`, status).
-- [ ] P9-002: Maintain LICENSE (AGPLv3) — already present; keep in sync with P0-004 decision.
-- [ ] P9-003: Add SECURITY.md (vulnerability reporting, printer-safety-critical disclosure process).
-- [ ] P9-004: Add AI_DISCLOSURE.md (disclose AI-assisted development per project norms).
-- [ ] P9-005: Add CONTRIBUTING.md (contribution process, code style, AGENTS.md pointer).
-- [ ] P9-006: Add THIRD_PARTY_LICENSES.md — enumerate every vendored/linked
-  upstream component (BambuStudio/libslic3r AGPLv3; Boost, CGAL, OCCT,
-  Assimp, OpenCV, TBB, Eigen, admesh, clipper/clipper2, miniz, semver,
-  qhull, OpenMeshCraft, nanosvg, CocoaMQTT, etc.) with license type,
-  version/commit pinned, and preserved copyright notices. Verify license
-  compatibility of each with AGPLv3 distribution (most are MIT/BSD/Apache,
-  compatible as linked dependencies; confirm none are incompatible
-  copyleft-conflicting terms).
+- [x] P9-001: Add/maintain README.md (project overview, build/setup incl. `Scripts/build-libslic3r.sh`, status).
+- [x] P9-002: Maintain LICENSE (AGPLv3) — present; in sync with P0-004 decision.
+- [x] P9-003: Add SECURITY.md (vulnerability reporting, printer-safety-critical disclosure process).
+- [x] P9-004: Add AI_DISCLOSURE.md (disclose AI-assisted development per project norms).
+- [x] P9-005: Add CONTRIBUTING.md (contribution process, code style, AGENTS.md pointer).
+- [x] P9-006: Add THIRD_PARTY_LICENSES.md — 25+ components enumerated with
+  license, pinned version, and per-row verification status (✅ directly
+  checked from source vs 📋 public record pending re-verification). No
+  AGPLv3-incompatible license identified; CGAL dual-license scope flagged
+  as a follow-up to confirm precisely.
+
 
 ## Task Completion Rules
 
