@@ -35,6 +35,14 @@ NSA1Mesh *nsa1_load_stl_mesh(const char *path);
 /// Releases a mesh returned by `nsa1_load_stl_mesh`. Safe to call with NULL.
 void nsa1_free_mesh(NSA1Mesh *mesh);
 
+/// Loads a 3MF file via libslic3r's `load_3mf` and returns the number of
+/// top-level model objects it contains, or -1 on failure.
+int64_t nsa1_3mf_object_count(const char *path);
+
+/// Loads a 3MF file and returns the first volume's mesh of the model
+/// object at `object_index`, or NULL on failure/out-of-range index.
+NSA1Mesh *nsa1_load_3mf_mesh(const char *path, int64_t object_index);
+
 #ifdef __cplusplus
 }
 #endif

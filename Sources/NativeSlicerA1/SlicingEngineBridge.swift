@@ -3,6 +3,8 @@ import Foundation
 
 enum SlicingEngineError: Error {
     case failedToReadSTL(path: String)
+    case failedToRead3MF(path: String)
+    case objectIndexOutOfRange(path: String, index: Int)
 }
 
 /// A real-geometry mesh loaded through the engine bridge: flat vertex (XYZ
@@ -12,6 +14,14 @@ struct LoadedMesh {
     let vertices: [Float] // XYZ triples
     let indices: [UInt32] // 3 per triangle
     var triangleCount: Int { indices.count / 3 }
+}
+
+private func convert(_ raw: UnsafeMutablePointer<NSA1Mesh>) -> LoadedMesh {
+    defer { nsa1_free_mesh(raw) }
+    let vertexFloatCount = raw.pointee.vertex_count * 3
+    let vertices = Array(UnsafeBufferPointer(start: raw.pointee.vertices, count: vertexFloatCount))
+    let indices = Array(UnsafeBufferPointer(start: raw.pointee.indices, count: raw.pointee.index_count))
+    return LoadedMesh(vertices: vertices, indices: indices)
 }
 
 /// Thin Swift wrapper over the C-ABI bridge into the real, vendored
@@ -31,11 +41,23 @@ enum SlicingEngine {
         guard let raw = path.withCString({ nsa1_load_stl_mesh($0) }) else {
             throw SlicingEngineError.failedToReadSTL(path: path)
         }
-        defer { nsa1_free_mesh(raw) }
+        return convert(raw)
+    }
 
-        let vertexFloatCount = raw.pointee.vertex_count * 3
-        let vertices = Array(UnsafeBufferPointer(start: raw.pointee.vertices, count: vertexFloatCount))
-        let indices = Array(UnsafeBufferPointer(start: raw.pointee.indices, count: raw.pointee.index_count))
-        return LoadedMesh(vertices: vertices, indices: indices)
+    /// Number of top-level model objects in a 3MF file, via the real
+    /// engine's `load_3mf`.
+    static func threeMFObjectCount(atPath path: String) throws -> Int {
+        let count = path.withCString { nsa1_3mf_object_count($0) }
+        guard count >= 0 else { throw SlicingEngineError.failedToRead3MF(path: path) }
+        return Int(count)
+    }
+
+    /// Loads the first volume's mesh of the model object at `index` from a
+    /// 3MF file, via the real engine's `load_3mf`.
+    static func loadThreeMFMesh(atPath path: String, objectIndex index: Int) throws -> LoadedMesh {
+        guard let raw = path.withCString({ nsa1_load_3mf_mesh($0, Int64(index)) }) else {
+            throw SlicingEngineError.objectIndexOutOfRange(path: path, index: index)
+        }
+        return convert(raw)
     }
 }
