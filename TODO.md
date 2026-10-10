@@ -35,7 +35,7 @@
 - [x] P2-003: Implement LAN communication. MQTT/TLS client (PrinterConnection, CocoaMQTT) for device/{serial}/report+request; manually verified end-to-end against a local TLS mosquitto broker.
 - [ ] P2-004: Implement print upload.
 - [ ] P2-005: Implement device monitoring.
-- [ ] P2-006: Implement AMS Lite mapping.
+- [x] P2-006: Implement AMS Lite mapping. AMSLiteState (slot/occupancy/filament parsing from MQTT print.ams) + AMSMapping ams_mapping array builder, tested against RESEARCH-P0-008.md examples.
 - [ ] P2-007: Validate printer-specific G-code.
 - [ ] P2-008: Perform physical A1 validation.
 
