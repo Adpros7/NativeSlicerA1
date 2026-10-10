@@ -8,12 +8,12 @@
 - [x] P0-004: Verify licenses and redistribution obligations. AGPLv3 constraint documented in RESEARCH.md; this repo licensed AGPLv3 (LICENSE).
 - [x] P0-005: Investigate Swift/C++ interoperability. See ARCHITECTURE.md.
 - [x] P0-006: Investigate Metal rendering architecture. See ARCHITECTURE.md.
-- [ ] P0-007: Investigate Bambu A1 communication protocols.
-- [ ] P0-008: Investigate AMS Lite integration.
-- [ ] P0-009: Investigate MakerWorld integration.
-- [ ] P0-010: Investigate A1 camera capabilities.
-- [ ] P0-011: Generate feature-parity matrix.
-- [ ] P0-012: Finalize application architecture.
+- [x] P0-007: Investigate Bambu A1 communication protocols. See RESEARCH-P0-007.md.
+- [x] P0-008: Investigate AMS Lite integration. See RESEARCH-P0-008.md.
+- [x] P0-009: Investigate MakerWorld integration. See RESEARCH-P0-009.md.
+- [x] P0-010: Investigate A1 camera capabilities. See RESEARCH-P0-010.md.
+- [x] P0-011: Generate feature-parity matrix. See RESEARCH-P0-011.md.
+- [x] P0-012: Finalize application architecture. See ARCHITECTURE.md.
 - [ ] P0-013: Establish build and testing infrastructure.
 
 ## Phase 1: Application Foundation

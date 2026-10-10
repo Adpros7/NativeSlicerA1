@@ -73,9 +73,38 @@ the assumption of **AGPLv3 for this repository** unless told otherwise, since
 section 2, and reimplementing a slicing engine from scratch is explicitly
 out of scope.
 
-## Next steps (unblocked)
+## P0-007..P0-011: Detailed findings (see dedicated files)
 
-- P0-005/P0-006: Swift/C++ interop and Metal rendering investigation.
-- P0-007-P0-010: A1 protocol/AMS Lite/MakerWorld/camera investigation (use
-  BambuStudio's `slic3r/Utils/` networking code as primary source, since it's
-  the authoritative first-party implementation).
+Swift/C++ interop and Metal rendering (P0-005/P0-006) are resolved in
+ARCHITECTURE.md. Remaining Phase 0 investigations, each in its own file
+(evidence-cited against `.research/` checkouts):
+
+- **RESEARCH-P0-007.md** — A1 printer communication: mDNS/Bonjour discovery,
+  MQTT over TLS (port 8883) for control/telemetry, FTPS (port 990) for file
+  upload, LAN-mode access-code auth, JSON message schema, A1-specific
+  firmware/feature gating vs X1.
+- **RESEARCH-P0-008.md** — AMS Lite: 4-slot `DevAmsType::AMS_LITE`, no
+  heater/humidity/drying (passive, unlike full AMS), `M1020` G-code slot
+  selection, `ams_mapping` project-color-to-slot array, MQTT state via
+  `tray_exist_bits` / `ams[].tray[]`.
+- **RESEARCH-P0-009.md** — MakerWorld: proprietary bind-ticket auth (not
+  OAuth), embedded webview in BambuStudio vs external-browser handoff in
+  OrcaSlicer (which dropped the embedded SSO UI). Undocumented API —
+  reimplementation carries ToS risk; recommend OrcaSlicer's external-browser
+  pattern over embedding Bambu's private endpoints.
+- **RESEARCH-P0-010.md** — A1 camera: built-in, but proprietary
+  `chamber_image` protocol on port 6000 (TLS+JPEG, **1 fps**, fixed focus),
+  not RTSP like X1 (port 322, 30 fps, AI defect detection). No AI features
+  available for A1 in either upstream project.
+- **RESEARCH-P0-011.md** — Feature-parity matrix (25 categories) across
+  BambuStudio/OrcaSlicer/this project's SPEC.md. Key gaps neither upstream
+  covers, requiring original implementation: comprehensive connector system
+  (SPEC wants 8+ types vs upstream's 3), automatic multi-plane model
+  splitting, region-based multicolor scheduling, native macOS mesh repair
+  (upstream uses Windows-only Netfabb API), G-code-to-3MF reconstruction.
+
+## Status
+
+Phase 0 research complete (P0-001 through P0-012). Remaining Phase 0 item:
+P0-013 (build/test infrastructure), which is the entry point into Phase 1.
+
