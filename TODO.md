@@ -21,7 +21,7 @@
 - [x] P1-001: Create native macOS application. SwiftUI skeleton app, builds and launches (`Sources/NativeSlicerA1`).
 - [x] P1-002: Implement Metal viewport. MTKView via NSViewRepresentable, MetalRenderer clears background, verified build+run+tests.
 - [x] P1-003: Integrate established slicing engine. Real `libslic3r` (pinned `v02.08.04.61`) built via `Scripts/build-libslic3r.sh`; C-ABI bridge (`Sources/CSlic3rBridge`) linked into the SwiftPM app; verified by a Swift test parsing a real STL through the real engine (`SlicingEngineBridgeTests`, 1016 triangles, libslic3r's own log output visible). See ARCHITECTURE.md.
-- [ ] P1-004: Implement STL importing.
+- [x] P1-004: Implement STL importing. Real geometry (vertex/index buffers) loaded via libslic3r's TriangleMesh::ReadSTLFile through CSlic3rBridge; `SlicingEngine.loadSTLMesh` tested against a real STL (1016 real triangles, index-bounds and non-degenerate-geometry checks).
 - [ ] P1-005: Implement 3MF importing.
 - [x] P1-006: Implement object transformations. Transform (TRS, simd composition) + UndoStack + SceneObject with reversible history (SPEC.md §9), tested.
 - [ ] P1-007: Implement project persistence.
