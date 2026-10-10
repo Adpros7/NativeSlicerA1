@@ -1,27 +1,48 @@
 # Architecture Decisions
 
-## P0-005: Swift/C++ interoperability
+## P0-005 / P1-003: Swift/C++ interoperability (updated with real outcome)
 
-Toolchain: Xcode 27 / Swift 6.4 — supports native bidirectional C++ interop
-(`SwiftSettings: .interoperabilityMode(.Cxx)` in SwiftPM, or
-`SWIFT_OBJC_INTEROP_MODE = objcxx` in Xcode build settings).
+**Original plan** (below, superseded): use Swift's native bidirectional
+C++ interop to call `libslic3r` directly.
 
-Decision: use Swift's built-in C++ interop to call `libslic3r` directly.
-Skip a hand-written Objective-C++ bridging layer (AGENTS.md: avoid custom
-frameworks / unnecessary abstraction) except where Swift's importer cannot
-represent a construct (heavy template metaprogramming, non-copyable types
-with custom destructors it misimports, `boost::` types at API boundaries).
-For those specific cases, add a thin `extern "C"` C shim function per call,
-not a general-purpose wrapper layer.
+**What actually happened, proven by a working build+test:** Swift's
+native C++ interop was not used. `libslic3r`'s headers are saturated with
+Boost (`boost::optional`, `boost::filesystem`, `boost::log`), heavy
+template metaprogramming (Eigen, CGAL, libnest2d), and macro-heavy config
+code that Swift's C++ importer cannot represent cleanly. Built and proved
+a **C-ABI bridge** instead (`Sources/CSlic3rBridge/`):
 
-Build shape:
-- `libslic3r` compiled as a static library target via its existing CMake
-  build (reuse Bambu's CMake, do not port to SwiftPM/Xcode build system).
-- Xcode project links the static lib; a small Swift package target
-  (`SlicingEngineBridge`) exposes a minimal C++/C API surface Swift imports
-  directly.
-- SwiftUI/AppKit layer never touches `libslic3r` types directly except
-  through this bridge target.
+- `CSlic3rBridge.h` / `.cpp`: `extern "C"` functions only, each taking/
+  returning POD types or `const char *`. First function:
+  `nsa1_stl_triangle_count(const char *path) -> int64_t`, calling
+  `Slic3r::TriangleMesh::ReadSTLFile` directly.
+- SwiftPM `.target(name: "CSlic3rBridge", ...)` compiles this against the
+  real `libslic3r` headers (vendored at `vendor/BambuStudio/`, built by
+  `Scripts/build-libslic3r.sh`); the executable target links the ~88
+  resulting static libs (libslic3r, CGAL, OCCT, Boost, Assimp, OpenCV,
+  TBB, etc.) via `linkerSettings: [.unsafeFlags([...])]` in `Package.swift`,
+  computed from CMake's actual link graph for a throwaway
+  `nsa1_bridge_test` executable (hand-picking `-l`/`-L` flags does not
+  scale for a dependency graph this size — let CMake resolve it, then copy
+  the resulting flags).
+- Verified end-to-end: `SlicingEngineBridgeTests.testParsesRealSTLViaRealEngine`
+  calls `SlicingEngine.stlTriangleCount(atPath:)` from pure Swift against a
+  real vendored STL file and gets the correct real answer (1016 triangles),
+  with libslic3r's own logging (`Initializing StaticPrintConfigs`) visible
+  in the test output as independent proof of real linkage.
+- One upstream wrinkle found and worked around: `libslic3r`'s
+  `LogSink.cpp` (cloud log upload/encryption) references `Slic3r::Http`
+  and `Slic3r::BBL_Encrypt`, which are actually implemented in
+  `src/slic3r/Utils/` (the GUI/app layer, not `libslic3r` itself) — an
+  upstream architecture leak. Worked around by compiling those two small
+  files into a `nsa1_libslic3r_leak_shim` static lib alongside `libslic3r`
+  (see `Scripts/build-libslic3r.sh`), rather than disabling cloud logging
+  or forking `libslic3r`.
+
+Still true from the original plan: SwiftUI/AppKit never touches
+`libslic3r` types directly, only through this bridge target (now a C-ABI
+target, not a native-interop one).
+
 
 ## P0-006: Metal rendering architecture
 

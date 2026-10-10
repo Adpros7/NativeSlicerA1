@@ -20,7 +20,7 @@
 
 - [x] P1-001: Create native macOS application. SwiftUI skeleton app, builds and launches (`Sources/NativeSlicerA1`).
 - [x] P1-002: Implement Metal viewport. MTKView via NSViewRepresentable, MetalRenderer clears background, verified build+run+tests.
-- [ ] P1-003: Integrate established slicing engine.
+- [x] P1-003: Integrate established slicing engine. Real `libslic3r` (pinned `v02.08.04.61`) built via `Scripts/build-libslic3r.sh`; C-ABI bridge (`Sources/CSlic3rBridge`) linked into the SwiftPM app; verified by a Swift test parsing a real STL through the real engine (`SlicingEngineBridgeTests`, 1016 triangles, libslic3r's own log output visible). See ARCHITECTURE.md.
 - [ ] P1-004: Implement STL importing.
 - [ ] P1-005: Implement 3MF importing.
 - [x] P1-006: Implement object transformations. Transform (TRS, simd composition) + UndoStack + SceneObject with reversible history (SPEC.md §9), tested.
@@ -100,6 +100,22 @@
 - [ ] P8-006: Package macOS application.
 - [ ] P8-007: Sign and notarize release.
 - [ ] P8-008: Publish validated release.
+
+## Phase 9: Repository Hygiene & Compliance
+
+- [ ] P9-001: Add/maintain README.md (project overview, build/setup incl. `Scripts/build-libslic3r.sh`, status).
+- [ ] P9-002: Maintain LICENSE (AGPLv3) — already present; keep in sync with P0-004 decision.
+- [ ] P9-003: Add SECURITY.md (vulnerability reporting, printer-safety-critical disclosure process).
+- [ ] P9-004: Add AI_DISCLOSURE.md (disclose AI-assisted development per project norms).
+- [ ] P9-005: Add CONTRIBUTING.md (contribution process, code style, AGENTS.md pointer).
+- [ ] P9-006: Add THIRD_PARTY_LICENSES.md — enumerate every vendored/linked
+  upstream component (BambuStudio/libslic3r AGPLv3; Boost, CGAL, OCCT,
+  Assimp, OpenCV, TBB, Eigen, admesh, clipper/clipper2, miniz, semver,
+  qhull, OpenMeshCraft, nanosvg, CocoaMQTT, etc.) with license type,
+  version/commit pinned, and preserved copyright notices. Verify license
+  compatibility of each with AGPLv3 distribution (most are MIT/BSD/Apache,
+  compatible as linked dependencies; confirm none are incompatible
+  copyleft-conflicting terms).
 
 ## Task Completion Rules
 

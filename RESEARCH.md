@@ -1,8 +1,24 @@
 # Phase 0 Research Findings
 
-Source checkouts live in `.research/` (gitignored, not committed): shallow
-clones of `bambulab/BambuStudio` and `SoftFever/OrcaSlicer` default branches,
-pulled 2026-10-10.
+Source checkouts live in `.research/` and `vendor/BambuStudio` (gitignored,
+not committed; `vendor/BambuStudio` is a symlink to the same checkout used
+by `Scripts/build-libslic3r.sh`).
+
+**Pinned versions (verified via GitHub releases/tags API, not assumed from
+default branch — initial audit mistakenly used arbitrary `master`/`main`
+HEAD commits, corrected below):**
+
+| Project | Repo | Pinned tag | Commit | Tagged |
+|---|---|---|---|---|
+| BambuStudio | `bambulab/BambuStudio` | `v02.08.04.61` | `f5e51a20bd328d4a043af9344825d7347270c2c9` | 2026-09-29 |
+| OrcaSlicer | `OrcaSlicer/OrcaSlicer` (moved from `SoftFever/OrcaSlicer`) | `v2.4.2` | `8500fcdccaa10b5099ac20d252af3a7c560046f1` | 2026-07-06 |
+
+Note: `bambulab/BambuStudio`'s GitHub "latest release" marker pointed to
+`v02.08.02.61`, which is *not* the newest tag — `v02.08.04.61` is newer but
+apparently unmarked as "latest" in the GitHub UI. Used the newest tag by
+version-sort, not the "latest release" marker, since the former is the more
+reliable signal of the actual current stable line.
+
 
 ## P0-001 / P0-002: Source audit
 
