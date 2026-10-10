@@ -31,7 +31,7 @@
 ## Phase 2: Printer Integration
 
 - [x] P2-001: Import A1 printer profiles. Vendored BBL A1 profile closure (machine/process/filament, 60 files) + inheritance resolver, tested.
-- [ ] P2-002: Implement printer discovery.
+- [x] P2-002: Implement printer discovery. SSDP listener (UDP 1990/2021) + NOTIFY parser, tested against real captured packet format (Sources/NativeSlicerA1/PrinterDiscovery.swift).
 - [ ] P2-003: Implement LAN communication.
 - [ ] P2-004: Implement print upload.
 - [ ] P2-005: Implement device monitoring.

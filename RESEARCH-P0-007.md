@@ -1,20 +1,38 @@
 ## P0-007: Bambu A1 Printer Communication Protocols
 
-### Discovery Mechanism: mDNS/Bonjour DNS-SD
+### Discovery Mechanism: SSDP (CORRECTED — see note)
+
+> **Correction (verified 2026-10-10):** the original pass below cited
+> `Bonjour.cpp` as the A1 discovery mechanism. Verified against source:
+> `Bonjour(std::string service)` in that file is only ever constructed with
+> `Bonjour("octoprint")` (`BonjourDialog.cpp:155`) — it's legacy upstream
+> Slic3r's generic OctoPrint mDNS discovery, **unrelated to Bambu printers**.
+> Bambu's actual LAN discovery/MQTT/FTPS implementation is delegated
+> entirely to the closed-source `bambu_networking` plugin
+> (`NetworkAgent.cpp` loads it as an external native library) — no source
+> for it exists in this repo. The real protocol, below, comes from
+> community reverse-engineering (Bambu Lab Printer Reverse-Engineering
+> Knowledge Base, `ssdp-go`, `open-bamboo-networking`), not from reading
+> BambuStudio source.
 
 **Implementation Details:**
-- **Protocol**: Multicast DNS (mDNS) per RFC 6762 and DNS Service Discovery (DNS-SD) per RFC 6763
-- **Source File**: `.research/BambuStudio/src/slic3r/Utils/Bonjour.cpp` (806 lines)
-- **Header**: `.research/BambuStudio/src/slic3r/Utils/Bonjour.hpp`
-- **Mechanism**: UDP multicast over IPv4 (224.0.0.251:5353) and IPv6 (FF02::FB:5353)
-- **Service Type**: Standard Bonjour printer discovery via _printer._tcp
-- **TXT Records Collected**: Service includes IP address, port, hostname, and printer metadata via TXT key-value pairs
-- **Hostname Format**: Device claims `.local` hostname with serial number; probes to avoid conflicts
+- **Protocol**: Non-standard SSDP (UPnP-derived), not mDNS/Bonjour.
+- **Transport**: Printer broadcasts UDP from source port 1900 to
+  destination ports **1990 and 2021** (not the standard SSDP port 1900 on
+  the receive side — a deliberate Bambu deviation from the SSDP spec).
+- **Message**: `NOTIFY * HTTP/1.1` with `NT: urn:bambulab-com:device:3dprinter:1`,
+  `USN: <serial>`, `Location: <printer IP>`, plus vendor headers
+  `DevModel.bambu.com`, `DevName.bambu.com`, `DevSignal.bambu.com` (RSSI),
+  `DevConnect.bambu.com` (lan/cloud), `DevBind.bambu.com`, `DevVersion.bambu.com`.
+- Printer repeats the broadcast every ~5 seconds; no query/response
+  handshake needed, just listen.
+- Does not cross VLANs/subnets (broadcast, not multicast) — community
+  workarounds (e.g. `bambu-bridge`) relay it across subnets.
 
 **A1-Specific Notes:**
-- A1 and A1 mini advertise mDNS services for LAN discovery
-- mDNS fallback required if network blocks UDP 5353 (enterprise networks); requires manual IP entry in Bambu Studio
-- Bonjour implementation is custom minimal DNS-SD decoder (security-focused, tested with AFL fuzzing)
+- Same discovery mechanism as all Bambu LAN printers (A1, A1 mini, P1, X1).
+- No official documentation; Bambu Lab forum thread acknowledges the
+  non-standard port choice (`forum.bambulab.com/t/use-ssdp-standards/7173`).
 
 ---
 
