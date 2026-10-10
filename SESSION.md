@@ -2,12 +2,13 @@
 
 ## Current phase
 Phase 1: Application Foundation (Phase 0 and Phase 9 docs complete; Phase 2
-partially complete). Next unblocked: P1-005 (3MF importing) or P1-007
-(project persistence, likely 3MF-based — see "Next recommended action").
+partially complete). Next unblocked: P1-007 (project persistence) or
+wiring a `LoadedMesh` into the Metal viewport (first real rendering
+milestone).
 
 ## Last completed task
-P1-004: Real STL geometry loading through the engine bridge
-(`SlicingEngine.loadSTLMesh`), tested against a real vendored STL file.
+P1-005: Real 3MF import via `load_3mf` (CSlic3rBridge), tested against a
+genuine engine-generated round-trip fixture.
 
 ## Current task / progress
 None in progress — clean stopping point, everything committed and pushed.
@@ -28,6 +29,9 @@ None in progress — clean stopping point, everything committed and pushed.
   link graph (don't hand-enumerate this dependency graph again if it
   needs to change — rebuild a throwaway CMake executable target linking
   `libslic3r` and read `ninja -t commands <target>` for the real line).
+  **Gotcha**: `NANOSVG_IMPLEMENTATION` must be `#define`d and `#include`d
+  before any libslic3r header, or its include guard blocks the later
+  definition if something transitively includes `nanosvg.h` first.
 - **Build system**: SwiftPM (`Package.swift`), no `.xcodeproj`.
 - Printer networking (A1 discovery/MQTT): reimplemented natively in Swift
   from reverse-engineered protocol docs — Bambu's own implementation is
@@ -35,7 +39,7 @@ None in progress — clean stopping point, everything committed and pushed.
   hardware-verified against a real printer (see TODO.md P2-002/003/006).
 
 ## Uncommitted changes
-None. All work through P1-004 is committed and pushed to
+None. All work through P1-005 is committed and pushed to
 `origin/master` (https://github.com/Adpros7/NativeSlicerA1).
 
 ## Known blockers
@@ -53,19 +57,20 @@ None. Open follow-ups (not blocking, tracked in TODO.md):
 
 ## Next recommended action
 Pick one:
-1. **P1-005 (3MF import)**: extend `CSlic3rBridge` with a
-   `nsa1_load_3mf` function wrapping `Slic3r::_BBS_3MF_Importer` (or the
-   plain `_3MF_Importer` for non-Bambu 3MF). This is the natural next
-   engine-bridge extension, same pattern as P1-004.
-2. **P1-007 (persistence)**: likely becomes "serialize/deserialize via
-   libslic3r's own 3MF reader/writer" once P1-005 exists — don't build a
-   separate JSON project format, reuse the engine's own format (SPEC.md
-   has no explicit persistence format requirement, but reuse-first
-   priority + BambuStudio/OrcaSlicer precedent both point to .3mf).
-3. **P1-002→P1-009 wiring**: feed a `LoadedMesh` (from P1-004) into
-   `MetalViewport`/`MetalRenderer`'s vertex buffers — currently the
+1. **P1-007 (persistence)**: reuse libslic3r's own 3MF reader/writer
+   (`load_3mf`/`store_3mf`, already bridged) as the project file format
+   rather than inventing a separate JSON format — reuse-first priority +
+   BambuStudio/OrcaSlicer precedent both point to `.3mf`. Needs a
+   `nsa1_store_3mf` bridge function (write side) to pair with the
+   existing read side.
+2. **Metal viewport wiring**: feed a `LoadedMesh` (from P1-004/P1-005)
+   into `MetalViewport`/`MetalRenderer`'s vertex buffers — currently the
    viewport only clears the background; this is the first real rendering
    milestone (see ARCHITECTURE.md P0-006).
+3. **P1-008 (conventional slicing)**: the real next-hardest engine-bridge
+   extension — wrap `Slic3r::Print`/`BackgroundSlicingProcess` to
+   actually run a slice and emit G-code. Expect a similarly-sized link
+   graph/include-order investigation as P1-003 took.
 
 ## Relevant test/build commands
 - `Scripts/build-libslic3r.sh` — one-time/idempotent engine build.
