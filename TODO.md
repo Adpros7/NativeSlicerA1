@@ -2,8 +2,8 @@
 
 ## Phase 0: Research and Architecture
 
-- [x] P0-001: Audit latest stable Bambu Studio source code. See RESEARCH.md.
-- [x] P0-002: Audit latest stable OrcaSlicer source code. See RESEARCH.md.
+- [x] P0-001: Audit latest stable Bambu Studio source code. See RESEARCH.md. Initial audit was against arbitrary `master` HEAD (47a13ee); re-pinned to actual latest stable release tag `v02.08.04.61` (f5e51a2, 2026-09-29) per correction — rebuilding against this pin.
+- [x] P0-002: Audit latest stable OrcaSlicer source code. See RESEARCH.md. Repo moved `SoftFever/OrcaSlicer` → `OrcaSlicer/OrcaSlicer`; re-pinned to latest stable tag `v2.4.2` (8500fcd, 2026-07-06).
 - [x] P0-003: Identify reusable slicing components. See RESEARCH.md.
 - [x] P0-004: Verify licenses and redistribution obligations. AGPLv3 constraint documented in RESEARCH.md; this repo licensed AGPLv3 (LICENSE).
 - [x] P0-005: Investigate Swift/C++ interoperability. See ARCHITECTURE.md.
@@ -12,7 +12,7 @@
 - [x] P0-008: Investigate AMS Lite integration. See RESEARCH-P0-008.md.
 - [x] P0-009: Investigate MakerWorld integration. See RESEARCH-P0-009.md.
 - [x] P0-010: Investigate A1 camera capabilities. See RESEARCH-P0-010.md.
-- [x] P0-011: Generate feature-parity matrix. See RESEARCH-P0-011.md.
+- [~] P0-011: Generate feature-parity matrix. See RESEARCH-P0-011.md (274-row draft, 25 categories) — **not yet a complete audit**: rows cite BambuStudio/OrcaSlicer support status but most lack concrete file:line source references. Treat as researched/draft, not a verified-complete audit, until a citation pass is done.
 - [x] P0-012: Finalize application architecture. See ARCHITECTURE.md.
 - [x] P0-013: Establish build and testing infrastructure. SwiftPM package (`swift build`/`swift test`), verified app launches.
 
@@ -31,11 +31,11 @@
 ## Phase 2: Printer Integration
 
 - [x] P2-001: Import A1 printer profiles. Vendored BBL A1 profile closure (machine/process/filament, 60 files) + inheritance resolver, tested.
-- [x] P2-002: Implement printer discovery. SSDP listener (UDP 1990/2021) + NOTIFY parser, tested against real captured packet format (Sources/NativeSlicerA1/PrinterDiscovery.swift).
-- [x] P2-003: Implement LAN communication. MQTT/TLS client (PrinterConnection, CocoaMQTT) for device/{serial}/report+request; manually verified end-to-end against a local TLS mosquitto broker.
+- [x] P2-002: Implement printer discovery. SSDP listener (UDP 1990/2021) + NOTIFY parser, tested against real captured packet format (Sources/NativeSlicerA1/PrinterDiscovery.swift). No source to reuse (Bambu's discovery is closed-source, delegated to `bambu_networking` plugin — RESEARCH-P0-007.md correction); reimplemented from community reverse-engineering. **Not hardware-verified** against a real A1.
+- [x] P2-003: Implement LAN communication. MQTT/TLS client (PrinterConnection, CocoaMQTT) for device/{serial}/report+request; verified end-to-end against a local TLS mosquitto broker (not a real printer). **Not hardware-verified.**
 - [ ] P2-004: Implement print upload.
 - [ ] P2-005: Implement device monitoring.
-- [x] P2-006: Implement AMS Lite mapping. AMSLiteState (slot/occupancy/filament parsing from MQTT print.ams) + AMSMapping ams_mapping array builder, tested against RESEARCH-P0-008.md examples.
+- [x] P2-006: Implement AMS Lite mapping. AMSLiteState (slot/occupancy/filament parsing from MQTT print.ams) + AMSMapping ams_mapping array builder, tested against RESEARCH-P0-008.md documented examples. **Not hardware-verified** against a real AMS Lite unit.
 - [ ] P2-007: Validate printer-specific G-code.
 - [ ] P2-008: Perform physical A1 validation.
 
