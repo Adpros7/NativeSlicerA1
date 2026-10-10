@@ -19,7 +19,7 @@
 ## Phase 1: Application Foundation
 
 - [x] P1-001: Create native macOS application. SwiftUI skeleton app, builds and launches (`Sources/NativeSlicerA1`).
-- [ ] P1-002: Implement Metal viewport.
+- [x] P1-002: Implement Metal viewport. MTKView via NSViewRepresentable, MetalRenderer clears background, verified build+run+tests.
 - [ ] P1-003: Integrate established slicing engine.
 - [ ] P1-004: Implement STL importing.
 - [ ] P1-005: Implement 3MF importing.

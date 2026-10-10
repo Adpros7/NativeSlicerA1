@@ -2,8 +2,7 @@ import SwiftUI
 
 struct ContentView: View {
     var body: some View {
-        Text("NativeSlicerA1 — foundation skeleton")
-            .padding()
+        MetalViewport()
             .frame(minWidth: 480, minHeight: 320)
     }
 }
