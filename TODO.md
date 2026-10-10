@@ -2,12 +2,12 @@
 
 ## Phase 0: Research and Architecture
 
-- [ ] P0-001: Audit latest stable Bambu Studio source code.
-- [ ] P0-002: Audit latest stable OrcaSlicer source code.
-- [ ] P0-003: Identify reusable slicing components.
-- [ ] P0-004: Verify licenses and redistribution obligations.
-- [ ] P0-005: Investigate Swift/C++ interoperability.
-- [ ] P0-006: Investigate Metal rendering architecture.
+- [x] P0-001: Audit latest stable Bambu Studio source code. See RESEARCH.md.
+- [x] P0-002: Audit latest stable OrcaSlicer source code. See RESEARCH.md.
+- [x] P0-003: Identify reusable slicing components. See RESEARCH.md.
+- [x] P0-004: Verify licenses and redistribution obligations. AGPLv3 constraint documented in RESEARCH.md; this repo licensed AGPLv3 (LICENSE).
+- [x] P0-005: Investigate Swift/C++ interoperability. See ARCHITECTURE.md.
+- [x] P0-006: Investigate Metal rendering architecture. See ARCHITECTURE.md.
 - [ ] P0-007: Investigate Bambu A1 communication protocols.
 - [ ] P0-008: Investigate AMS Lite integration.
 - [ ] P0-009: Investigate MakerWorld integration.
