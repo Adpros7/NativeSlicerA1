@@ -23,7 +23,7 @@
 - [ ] P1-003: Integrate established slicing engine.
 - [ ] P1-004: Implement STL importing.
 - [ ] P1-005: Implement 3MF importing.
-- [ ] P1-006: Implement object transformations.
+- [x] P1-006: Implement object transformations. Transform (TRS, simd composition) + UndoStack + SceneObject with reversible history (SPEC.md §9), tested.
 - [ ] P1-007: Implement project persistence.
 - [ ] P1-008: Implement conventional slicing.
 - [ ] P1-009: Implement G-code visualization.
