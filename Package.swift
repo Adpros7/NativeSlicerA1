@@ -7,7 +7,8 @@ let package = Package(
     targets: [
         .executableTarget(
             name: "NativeSlicerA1",
-            path: "Sources/NativeSlicerA1"
+            path: "Sources/NativeSlicerA1",
+            resources: [.copy("Resources/Profiles")]
         ),
         .testTarget(
             name: "NativeSlicerA1Tests",

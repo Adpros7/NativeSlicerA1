@@ -30,7 +30,7 @@
 
 ## Phase 2: Printer Integration
 
-- [ ] P2-001: Import A1 printer profiles.
+- [x] P2-001: Import A1 printer profiles. Vendored BBL A1 profile closure (machine/process/filament, 60 files) + inheritance resolver, tested.
 - [ ] P2-002: Implement printer discovery.
 - [ ] P2-003: Implement LAN communication.
 - [ ] P2-004: Implement print upload.
