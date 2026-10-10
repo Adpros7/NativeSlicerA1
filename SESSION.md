@@ -11,8 +11,8 @@ milestone — imported STL/3MF geometry now reaches a GPU-backed Metal
 viewport.
 
 ## Current task / progress
-Verified P1-007 and viewport wiring; documentation updated. Commit/push
-still pending.
+No task in progress. P1-007 and viewport wiring were committed and pushed
+as `fd3bf06` (`feat: render imported meshes and persist 3MF projects`).
 
 ## Important technical decisions
 - **License**: AGPLv3 (RESEARCH.md P0-004) — required to reuse `libslic3r`.
@@ -46,8 +46,7 @@ still pending.
   hardware-verified against a real printer (see TODO.md P2-002/003/006).
 
 ## Uncommitted changes
-P1-007/viewport implementation and documentation are verified locally,
-but not yet committed or pushed.
+None. Work through P1-007 is committed and pushed to `origin/master`.
 
 ## Known blockers
 None. Open follow-ups (not blocking, tracked in TODO.md):
