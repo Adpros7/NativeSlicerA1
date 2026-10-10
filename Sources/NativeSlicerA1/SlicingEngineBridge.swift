@@ -1,10 +1,13 @@
 import CSlic3rBridge
 import Foundation
+import simd
 
 enum SlicingEngineError: Error {
     case failedToReadSTL(path: String)
     case failedToRead3MF(path: String)
+    case failedToWrite3MF(path: String)
     case objectIndexOutOfRange(path: String, index: Int)
+    case unsupportedFileType(String)
 }
 
 /// A real-geometry mesh loaded through the engine bridge: flat vertex (XYZ
@@ -22,6 +25,51 @@ private func convert(_ raw: UnsafeMutablePointer<NSA1Mesh>) -> LoadedMesh {
     let vertices = Array(UnsafeBufferPointer(start: raw.pointee.vertices, count: vertexFloatCount))
     let indices = Array(UnsafeBufferPointer(start: raw.pointee.indices, count: raw.pointee.index_count))
     return LoadedMesh(vertices: vertices, indices: indices)
+}
+
+/// Column-major flat form of a `simd_float4x4`, matching the C bridge's
+/// `matrix16` convention (same layout `nsa1_3mf_object_matrix` returns).
+private func flatten(_ m: simd_float4x4) -> [Double] {
+    [m.columns.0, m.columns.1, m.columns.2, m.columns.3]
+        .flatMap { [$0.x, $0.y, $0.z, $0.w] }
+        .map(Double.init)
+}
+
+private func unflatten(_ raw: UnsafeBufferPointer<Double>) -> simd_float4x4 {
+    func column(_ base: Int) -> SIMD4<Float> {
+        SIMD4(Float(raw[base]), Float(raw[base + 1]), Float(raw[base + 2]), Float(raw[base + 3]))
+    }
+    return simd_float4x4(columns: (column(0), column(4), column(8), column(12)))
+}
+
+private struct PendingSceneObject {
+    let vertices: [Float]
+    let indices: [UInt32]
+    let matrix16: [Double]
+}
+
+/// Recursively pins each object's vertex/index/matrix arrays with nested
+/// `withUnsafeBufferPointer` scopes so the flat `NSA1SceneObject` array
+/// handed to `body` stays valid for the whole call — the C function never
+/// outlives this stack frame, so no manual lifetime management is needed.
+private func withNSA1SceneObjects<R>(_ pending: [PendingSceneObject], _ body: (UnsafePointer<NSA1SceneObject>?, Int) -> R) -> R {
+    func build(_ index: Int, _ acc: inout [NSA1SceneObject]) -> R {
+        guard index < pending.count else {
+            return acc.withUnsafeBufferPointer { body($0.baseAddress, acc.count) }
+        }
+        let object = pending[index]
+        return object.vertices.withUnsafeBufferPointer { vbuf in
+            object.indices.withUnsafeBufferPointer { ibuf in
+                object.matrix16.withUnsafeBufferPointer { mbuf in
+                    acc.append(NSA1SceneObject(vertices: vbuf.baseAddress, vertex_count: vbuf.count / 3, indices: ibuf.baseAddress, index_count: ibuf.count, matrix16: mbuf.baseAddress))
+                    return build(index + 1, &acc)
+                }
+            }
+        }
+    }
+    var acc: [NSA1SceneObject] = []
+    acc.reserveCapacity(pending.count)
+    return build(0, &acc)
 }
 
 /// Thin Swift wrapper over the C-ABI bridge into the real, vendored
@@ -59,5 +107,29 @@ enum SlicingEngine {
             throw SlicingEngineError.objectIndexOutOfRange(path: path, index: index)
         }
         return convert(raw)
+    }
+
+    /// Reads the first instance's placement matrix of the model object at
+    /// `index` from a 3MF file, via the real engine's `load_3mf`.
+    static func threeMFObjectTransform(atPath path: String, objectIndex index: Int) throws -> simd_float4x4 {
+        var raw = [Double](repeating: 0, count: 16)
+        let result = raw.withUnsafeMutableBufferPointer { buf in
+            path.withCString { nsa1_3mf_object_matrix($0, Int64(index), buf.baseAddress) }
+        }
+        guard result == 0 else { throw SlicingEngineError.objectIndexOutOfRange(path: path, index: index) }
+        return raw.withUnsafeBufferPointer(unflatten)
+    }
+
+    /// Writes `objects` (each a mesh plus its placement matrix) to a 3MF
+    /// project file via the real engine's `store_3mf` — P1-007's project
+    /// persistence, reusing the same writer BambuStudio/OrcaSlicer use.
+    static func storeThreeMF(atPath path: String, objects: [(mesh: LoadedMesh, transform: simd_float4x4)]) throws {
+        let pending = objects.map {
+            PendingSceneObject(vertices: $0.mesh.vertices, indices: $0.mesh.indices, matrix16: flatten($0.transform))
+        }
+        let result = withNSA1SceneObjects(pending) { ptr, count in
+            path.withCString { nsa1_store_3mf($0, ptr, count) }
+        }
+        guard result == 0 else { throw SlicingEngineError.failedToWrite3MF(path: path) }
     }
 }

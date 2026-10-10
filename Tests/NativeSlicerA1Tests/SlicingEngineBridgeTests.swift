@@ -47,7 +47,9 @@ final class SlicingEngineBridgeTests: XCTestCase {
 
         let mesh = try SlicingEngine.loadThreeMFMesh(atPath: url.path, objectIndex: 0)
         XCTAssertEqual(mesh.triangleCount, 1016)
-        XCTAssertGreaterThan(Set(mesh.vertices).count, 10)
+        let source = try SlicingEngine.loadSTLMesh(atPath: repoRoot().appendingPathComponent("Sources/NativeSlicerA1/Resources/Profiles/BBL/bbl-3dp-X1.stl").path)
+        XCTAssertEqual(mesh.vertices.count, source.vertices.count)
+        XCTAssertTrue(zip(mesh.vertices, source.vertices).allSatisfy { abs($0 - $1) < 0.001 })
     }
 
     func testThreeMFOutOfRangeIndexThrows() throws {

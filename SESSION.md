@@ -2,16 +2,17 @@
 
 ## Current phase
 Phase 1: Application Foundation (Phase 0 and Phase 9 docs complete; Phase 2
-partially complete). Next unblocked: P1-007 (project persistence) or
-wiring a `LoadedMesh` into the Metal viewport (first real rendering
-milestone).
+partially complete). P1-001 through P1-007 are complete. Next unblocked:
+P1-008 conventional slicing.
 
 ## Last completed task
-P1-005: Real 3MF import via `load_3mf` (CSlic3rBridge), tested against a
-genuine engine-generated round-trip fixture.
+P1-007: Real 3MF project persistence plus the first real rendering
+milestone — imported STL/3MF geometry now reaches a GPU-backed Metal
+viewport.
 
 ## Current task / progress
-None in progress — clean stopping point, everything committed and pushed.
+Verified P1-007 and viewport wiring; documentation updated. Commit/push
+still pending.
 
 ## Important technical decisions
 - **License**: AGPLv3 (RESEARCH.md P0-004) — required to reuse `libslic3r`.
@@ -33,14 +34,20 @@ None in progress — clean stopping point, everything committed and pushed.
   before any libslic3r header, or its include guard blocks the later
   definition if something transitively includes `nanosvg.h` first.
 - **Build system**: SwiftPM (`Package.swift`), no `.xcodeproj`.
+- **Viewport/persistence**: `ProjectDocument` owns source meshes plus
+  non-destructive `SceneObject` transforms. It writes/reads an engine-owned
+  3MF project with a C-ABI `NSA1SceneObject` payload (vertices, indices,
+  column-major transform). Metal buffers are built once per mesh and cached;
+  only per-object uniforms are encoded each frame. Project replacement is
+  transactional: a failed load retains the open scene.
 - Printer networking (A1 discovery/MQTT): reimplemented natively in Swift
   from reverse-engineered protocol docs — Bambu's own implementation is
   closed-source (`bambu_networking` plugin, no public source). Not
   hardware-verified against a real printer (see TODO.md P2-002/003/006).
 
 ## Uncommitted changes
-None. All work through P1-005 is committed and pushed to
-`origin/master` (https://github.com/Adpros7/NativeSlicerA1).
+P1-007/viewport implementation and documentation are verified locally,
+but not yet committed or pushed.
 
 ## Known blockers
 None. Open follow-ups (not blocking, tracked in TODO.md):
@@ -56,24 +63,15 @@ None. Open follow-ups (not blocking, tracked in TODO.md):
   code is protocol/documentation-level verified only.
 
 ## Next recommended action
-Pick one:
-1. **P1-007 (persistence)**: reuse libslic3r's own 3MF reader/writer
-   (`load_3mf`/`store_3mf`, already bridged) as the project file format
-   rather than inventing a separate JSON format — reuse-first priority +
-   BambuStudio/OrcaSlicer precedent both point to `.3mf`. Needs a
-   `nsa1_store_3mf` bridge function (write side) to pair with the
-   existing read side.
-2. **Metal viewport wiring**: feed a `LoadedMesh` (from P1-004/P1-005)
-   into `MetalViewport`/`MetalRenderer`'s vertex buffers — currently the
-   viewport only clears the background; this is the first real rendering
-   milestone (see ARCHITECTURE.md P0-006).
-3. **P1-008 (conventional slicing)**: the real next-hardest engine-bridge
-   extension — wrap `Slic3r::Print`/`BackgroundSlicingProcess` to
-   actually run a slice and emit G-code. Expect a similarly-sized link
-   graph/include-order investigation as P1-003 took.
+P1-008 conventional slicing: reuse `Slic3r::Print`/`BackgroundSlicingProcess`
+through a small C-ABI extension to run a configured A1 slice and return
+G-code. Investigate the existing BambuStudio execution path and config
+requirements before adding bridge code; do not write a parallel slicer.
 
 ## Relevant test/build commands
 - `Scripts/build-libslic3r.sh` — one-time/idempotent engine build.
 - `swift build` / `swift test` / `swift run NativeSlicerA1`.
-- `swift test --filter SlicingEngineBridgeTests` — fastest way to confirm
-  the engine bridge still links and works after a `vendor/` rebuild.
+- `swift test --filter ProjectDocumentTests` — real 3MF geometry/transform
+  round-trip plus failed-load preservation.
+- `swift test --filter MetalRendererTests` — real mesh upload and draw
+  encoding through the compiled GPU pipeline.

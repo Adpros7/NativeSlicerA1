@@ -12,6 +12,7 @@
 #include "libslic3r/TriangleMesh.hpp"
 #include "libslic3r/Model.hpp"
 #include "libslic3r/Format/3mf.hpp"
+#include <cstring>
 
 namespace {
 NSA1Mesh *copy_mesh(const Slic3r::TriangleMesh &mesh) {
@@ -88,5 +89,57 @@ extern "C" NSA1Mesh *nsa1_load_3mf_mesh(const char *path, int64_t object_index) 
     if (object->volumes.empty()) {
         return nullptr;
     }
-    return copy_mesh(object->volumes.front()->mesh());
+    // `load_3mf` centers a volume's mesh and keeps the compensating local
+    // placement on ModelVolume. Apply it to this exported copy so Swift
+    // receives object-local geometry; the separately exported instance
+    // matrix then remains the complete scene-object placement.
+    Slic3r::TriangleMesh mesh = object->volumes.front()->mesh();
+    mesh.transform(object->volumes.front()->get_transformation().get_matrix(), /*fix_left_handed=*/false);
+    return copy_mesh(mesh);
+}
+
+extern "C" int nsa1_3mf_object_matrix(const char *path, int64_t object_index, double *out_matrix16) {
+    Slic3r::Model model;
+    if (!load_3mf_model(path, model)) {
+        return -1;
+    }
+    if (object_index < 0 || static_cast<size_t>(object_index) >= model.objects.size()) {
+        return -1;
+    }
+    const Slic3r::ModelObject *object = model.objects[static_cast<size_t>(object_index)];
+    if (object->instances.empty()) {
+        return -1;
+    }
+    const Slic3r::Transform3d &matrix = object->instances.front()->get_transformation().get_matrix();
+    // Eigen stores column-major by default, matching simd_float4x4's layout.
+    std::memcpy(out_matrix16, matrix.data(), 16 * sizeof(double));
+    return 0;
+}
+
+extern "C" int nsa1_store_3mf(const char *path, const NSA1SceneObject *objects, size_t object_count) {
+    Slic3r::Model model;
+    for (size_t i = 0; i < object_count; ++i) {
+        const NSA1SceneObject &obj = objects[i];
+        std::vector<Slic3r::Vec3f> vertices(obj.vertex_count);
+        for (size_t v = 0; v < obj.vertex_count; ++v) {
+            vertices[v] = Slic3r::Vec3f(obj.vertices[v * 3 + 0], obj.vertices[v * 3 + 1], obj.vertices[v * 3 + 2]);
+        }
+        std::vector<Slic3r::Vec3i> faces(obj.index_count / 3);
+        for (size_t f = 0; f < faces.size(); ++f) {
+            faces[f] = Slic3r::Vec3i(
+                static_cast<int>(obj.indices[f * 3 + 0]),
+                static_cast<int>(obj.indices[f * 3 + 1]),
+                static_cast<int>(obj.indices[f * 3 + 2]));
+        }
+        Slic3r::TriangleMesh mesh(vertices, faces);
+
+        Slic3r::ModelObject *model_object = model.add_object();
+        model_object->add_volume(std::move(mesh), Slic3r::ModelVolumeType::MODEL_PART, /*modify_to_center_geometry=*/false);
+        Slic3r::ModelInstance *instance = model_object->add_instance();
+        Slic3r::Transform3d trafo;
+        trafo.matrix() = Eigen::Map<const Eigen::Matrix4d>(obj.matrix16);
+        instance->set_transformation(Slic3r::Geometry::Transformation(trafo));
+    }
+    Slic3r::DynamicPrintConfig config;
+    return Slic3r::store_3mf(path, &model, &config, /*fullpath_sources=*/true) ? 0 : -1;
 }

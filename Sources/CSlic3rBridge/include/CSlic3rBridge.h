@@ -43,6 +43,29 @@ int64_t nsa1_3mf_object_count(const char *path);
 /// object at `object_index`, or NULL on failure/out-of-range index.
 NSA1Mesh *nsa1_load_3mf_mesh(const char *path, int64_t object_index);
 
+/// Reads the first instance's placement matrix of the model object at
+/// `object_index` into `out_matrix16` (column-major 4x4, i.e. `v' = M*v`
+/// for column vectors — the same convention as Swift's `simd_float4x4`).
+/// Returns 0 on success, -1 on failure/out-of-range index.
+int nsa1_3mf_object_matrix(const char *path, int64_t object_index, double *out_matrix16);
+
+/// One placed object to write into a 3MF project file: its mesh plus a
+/// column-major 4x4 placement matrix (16 doubles, same convention as
+/// `nsa1_3mf_object_matrix`/`simd_float4x4`).
+typedef struct {
+    const float *vertices;
+    size_t vertex_count;
+    const uint32_t *indices;
+    size_t index_count;
+    const double *matrix16;
+} NSA1SceneObject;
+
+/// Writes `object_count` placed objects to a 3MF project file via
+/// libslic3r's `store_3mf` (the same writer BambuStudio/OrcaSlicer use for
+/// their own project format — P1-007). Returns 0 on success, -1 on
+/// failure.
+int nsa1_store_3mf(const char *path, const NSA1SceneObject *objects, size_t object_count);
+
 #ifdef __cplusplus
 }
 #endif

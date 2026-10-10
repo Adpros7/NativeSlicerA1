@@ -47,14 +47,12 @@ target, not a native-interop one).
 ## P0-006: Metal rendering architecture
 
 Standard MetalKit integration, no third-party rendering engine:
-- `MTKView` wrapped via `NSViewRepresentable` for SwiftUI embedding.
-- A `Renderer: NSObject, MTKViewDelegate` owns the `MTLDevice`,
-  `MTLCommandQueue`, pipeline states, and scene buffers.
-- Mesh data (triangles from imported STL/3MF, sliced G-code toolpaths)
-  converted from `libslic3r`'s `TriangleMesh`/`TriangleMesh3D` into Metal
-  vertex buffers at import/slice time, not per-frame.
-- Camera/orbit controls: implement directly (arcball math is ~100 lines,
-  not worth a dependency — ponytail: skip a gesture/camera framework).
+- `MTKView` wrapped by `MetalViewport` (`NSViewRepresentable`) for SwiftUI embedding.
+- `MetalRenderer: NSObject, MTKViewDelegate` owns the device, command queue, runtime-compiled MSL pipeline, depth state, orbit camera, and mesh GPU-buffer cache.
+- Imported `LoadedMesh` triangle data is uploaded to indexed Metal vertex/index buffers exactly once per source mesh; per-frame work is only an object transform/color uniform and indexed draw call.
+- Geometry uses flat derivative normals in the fragment shader, avoiding a redundant CPU normal buffer; selection changes object color.
+- `OrbitMTKView` handles mouse-drag orbit and scroll-wheel zoom directly. No gesture/camera dependency.
+- `ProjectDocument` owns immutable source meshes and mutable `SceneObject` placements. Import/open/save UI binds it to the viewport. Project persistence uses `libslic3r`'s own `.3mf` reader/writer (`load_3mf`/`store_3mf`), not an invented JSON side format.
 
 ## P0-012: Application architecture (finalized)
 
@@ -66,7 +64,7 @@ graph TD
   VM --> Renderer[Metal Renderer]
   Renderer --> Core
   VM --> Net[Printer Communication - Swift, ported from slic3r/Utils]
-  VM --> Persist[Project Persistence - Swift, Codable + 3MF]
+  VM --> Persist[3MF Project Persistence via SlicingEngineBridge]
   VM --> Auth[Keychain-backed Auth]
 ```
 

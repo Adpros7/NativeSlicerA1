@@ -214,7 +214,8 @@ let package = Package(
         .testTarget(
             name: "NativeSlicerA1Tests",
             dependencies: ["NativeSlicerA1"],
-            path: "Tests/NativeSlicerA1Tests"
+            path: "Tests/NativeSlicerA1Tests",
+            exclude: ["Fixtures"]
         ),
     ],
     cxxLanguageStandard: .cxx17
