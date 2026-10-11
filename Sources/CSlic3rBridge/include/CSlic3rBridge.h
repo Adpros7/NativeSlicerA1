@@ -265,6 +265,26 @@ void nsa1_free_toolpath(NSA1Toolpath *toolpath);
 /// Releases a string returned by `nsa1_slice_to_gcode`'s `out_error`. Safe
 /// to call with NULL.
 void nsa1_free_string(char *s);
+/// Cuts a model object along a user-specified plane (P4-004).
+/// `plane_points` is 4 Vec3d points defining the cut plane.
+/// `cut_mode` determines which parts are kept: 0=both halves, 1=lower,
+/// 2=upper. Returns a new NSA1SceneObject** array of the resulting
+/// objects (0, 1, or 2), plus the count. On failure `*out_error` is a
+/// newly allocated message freed by `nsa1_free_string`.
+typedef struct {
+    double x, y, z;
+} NSA1Vec3d;
+
+typedef struct {
+    NSA1Vec3d plane_points[4];
+    int cut_mode;  // 0=both, 1=lower, 2=upper
+} NSA1CutRequest;
+
+int nsa1_cut_model(
+    const NSA1SceneObject *scene_objects, size_t object_count,
+    const NSA1CutRequest *cut_request,
+    NSA1SceneObject ***out_objects, size_t *out_object_count,
+    char **out_error);
 
 
 #ifdef __cplusplus

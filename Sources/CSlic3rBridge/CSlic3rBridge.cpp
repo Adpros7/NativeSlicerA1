@@ -226,6 +226,96 @@ void cut_model_at_height(Slic3r::Model &model, double height, Slic3r::ModelObjec
         object->ensure_on_bed();
     }
 }
+// Forward declaration (defined later in this file).
+Slic3r::Model build_model_from_objects(const NSA1SceneObject *objects, size_t object_count);
+// Helper: converts a Slic3r::ModelObject to an NSA1SceneObject.
+// The mesh is already transformed, so no matrix is needed.
+NSA1SceneObject *scene_object_from_model_object(const Slic3r::ModelObject &obj) {
+    Slic3r::TriangleMesh mesh = obj.mesh();
+    NSA1Mesh *mesh_data = copy_mesh(mesh);
+
+    auto *scene_obj = static_cast<NSA1SceneObject *>(
+        malloc(sizeof(NSA1SceneObject)));
+    scene_obj->vertices = mesh_data->vertices;
+    scene_obj->vertex_count = mesh_data->vertex_count;
+    scene_obj->indices = mesh_data->indices;
+    scene_obj->index_count = mesh_data->index_count;
+    scene_obj->matrix16 = nullptr;
+
+    nsa1_free_mesh(mesh_data);
+    return scene_obj;
+}
+
+extern "C" int nsa1_cut_model(
+    const NSA1SceneObject *scene_objects, size_t object_count,
+    const NSA1CutRequest *cut_request,
+    NSA1SceneObject ***out_objects, size_t *out_object_count,
+    char **out_error) {
+    try {
+        if (object_count == 0) {
+            *out_objects = nullptr;
+            *out_object_count = 0;
+            return 0;
+        }
+
+        // Build a model from the scene objects
+        Slic3r::Model model = build_model_from_objects(scene_objects, object_count);
+        if (model.objects.empty()) {
+            *out_objects = nullptr;
+            *out_object_count = 0;
+            return 0;
+        }
+
+        // Convert the cut plane from the request
+        std::array<Slic3r::Vec3d, 4> plane;
+        for (int i = 0; i < 4; ++i) {
+            plane[i] = Slic3r::Vec3d(
+                cut_request->plane_points[i].x,
+                cut_request->plane_points[i].y,
+                cut_request->plane_points[i].z);
+        }
+
+        // Collect cut results: for cut_mode 0 (both), we need both halves
+        std::vector<Slic3r::ModelObject *> all_parts;
+        if (cut_request->cut_mode == 0) {
+            // Cut twice: once for lower, once for upper
+            auto lower = model.objects.front()->cut(0, plane, Slic3r::ModelObjectCutAttribute::KeepLower);
+            auto upper = model.objects.front()->cut(0, plane, Slic3r::ModelObjectCutAttribute::KeepUpper);
+            for (auto *part : lower) all_parts.push_back(part);
+            for (auto *part : upper) all_parts.push_back(part);
+        } else {
+            Slic3r::ModelObjectCutAttribute attribute = Slic3r::ModelObjectCutAttribute::KeepLower;
+            if (cut_request->cut_mode == 2) attribute = Slic3r::ModelObjectCutAttribute::KeepUpper;
+            auto parts = model.objects.front()->cut(0, plane, attribute);
+            for (auto *part : parts) all_parts.push_back(part);
+        }
+
+        // Convert result to NSA1SceneObject array
+        *out_object_count = all_parts.size();
+        if (*out_object_count == 0) {
+            *out_objects = nullptr;
+            return 0;
+        }
+
+        *out_objects = static_cast<NSA1SceneObject **>(
+            malloc(sizeof(NSA1SceneObject *) * *out_object_count));
+        for (size_t i = 0; i < *out_object_count; ++i) {
+            (*out_objects)[i] = scene_object_from_model_object(*all_parts[i]);
+        }
+
+        return 0;
+    } catch (const std::exception &e) {
+        *out_error = strdup(e.what());
+        *out_objects = nullptr;
+        *out_object_count = 0;
+        return -1;
+    } catch (...) {
+        *out_error = strdup("unknown cut error");
+        *out_objects = nullptr;
+        *out_object_count = 0;
+        return -1;
+    }
+}
 Slic3r::Model build_model_from_objects(const NSA1SceneObject *objects, size_t object_count) {
     Slic3r::Model model;
     for (size_t i = 0; i < object_count; ++i) {
