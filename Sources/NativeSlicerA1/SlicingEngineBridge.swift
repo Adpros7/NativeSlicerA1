@@ -246,7 +246,7 @@ enum SlicingEngine {
         outputPath: String
     ) throws -> CalibrationGeneration {
         var errorMessage: String?
-        var generation = CalibrationGeneration(toolpath: [], blocks: [])
+        var generation = CalibrationGeneration(toolpath: [], blocks: [], outputPath: outputPath)
         let result = withNSA1ConfigEntries(configEntries) { cfgPtr, cfgCount in
             resourceURL.path.withCString { resourcePtr in
                 outputPath.withCString { outputPtr -> Int32 in
@@ -300,7 +300,8 @@ enum SlicingEngine {
                                             endZ: $0.end_z
                                         )
                                     }
-                                } ?? []
+                                } ?? [],
+                                outputPath: outputPath
                             )
                         }
                     }

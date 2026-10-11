@@ -3,6 +3,7 @@ import UniformTypeIdentifiers
 
 struct ContentView: View {
     @StateObject private var document = ProjectDocument()
+    @State private var showingCalibration = false
     @State private var showingSettings = false
 
     var body: some View {
@@ -21,6 +22,7 @@ struct ContentView: View {
                     .disabled(document.objects.isEmpty)
                 Button("Delete", action: deleteSelection)
                     .disabled(document.selection == nil)
+                Button("Calibration…") { showingCalibration = true }
                 Button("Settings…") { showingSettings = true }
                 Button(document.isSlicing ? "Slicing…" : "Slice", action: document.slice)
                     .disabled(document.objects.isEmpty || document.isSlicing)
@@ -28,6 +30,9 @@ struct ContentView: View {
         }
         .sheet(isPresented: $showingSettings) {
             SlicingSettingsView(document: document)
+        }
+        .sheet(isPresented: $showingCalibration) {
+            CalibrationView(document: document)
         }
         .alert("Error", isPresented: Binding(
             get: { document.lastError != nil },

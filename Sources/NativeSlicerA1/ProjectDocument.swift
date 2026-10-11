@@ -13,6 +13,7 @@ final class ProjectDocument: ObservableObject {
     @Published var lastError: String?
     @Published private(set) var toolpath: [ToolpathSegment] = []
     @Published private(set) var isSlicing = false
+    @Published private(set) var lastCalibration: CalibrationGeneration?
     /// Printer/process/filament profile choice and setting overrides
     /// (P3-003) — applied by `slice()` and persisted by `save(to:)`/
     /// `load(from:)` via the 3MF project's embedded config.
@@ -153,5 +154,44 @@ final class ProjectDocument: ObservableObject {
                 }
             }
         }
+    }
+
+    /// Runs a flow-rate calibration slice (pass 1: 0.80→1.20, 0.05 step)
+    /// through the real engine without replacing scene geometry or taking a
+    /// printer action.
+    func calibrate() async {
+        guard !isSlicing else { return }
+        isSlicing = true
+        let resourceURL = CalibrationResources.url(named: "flowrate-test-pass1")
+        let selection = profileSelection
+        let outputPath = FileManager.default.temporaryDirectory
+            .appendingPathComponent("\(UUID().uuidString).gcode").path
+        do {
+            guard let resourceURL else {
+                throw SlicingEngineError.sliceFailed("Calibration resource not found")
+            }
+            let loader = try BambuProfileLoader()
+            let request = CalibrationRequest(
+                workflow: .flowRate,
+                start: 0.8,
+                end: 1.2,
+                step: 0.05,
+                selection: selection
+            )
+            try CalibrationJob.validate(request, loader: loader, capabilities: .all)
+            let configEntries = try SlicingJob.resolvedConfigEntries(loader: loader, selection: selection)
+            let generation = try SlicingEngine.generateCalibrationGCode(
+                request: request,
+                resourceURL: resourceURL,
+                configEntries: configEntries,
+                outputPath: outputPath
+            )
+            toolpath = generation.toolpath
+            lastCalibration = generation
+            lastError = nil
+        } catch {
+            lastError = "Calibration failed: \(error)"
+        }
+        isSlicing = false
     }
 }

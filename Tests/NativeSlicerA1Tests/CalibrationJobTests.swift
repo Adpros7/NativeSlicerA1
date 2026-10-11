@@ -1,6 +1,14 @@
 import XCTest
 @testable import NativeSlicerA1
 
+private func repoRoot(from file: StaticString = #filePath) -> URL {
+    URL(fileURLWithPath: "\(file)")
+        .deletingLastPathComponent() // Tests/NativeSlicerA1Tests
+        .deletingLastPathComponent() // Tests
+        .deletingLastPathComponent() // repo root
+}
+
+@MainActor
 final class CalibrationJobTests: XCTestCase {
     func testBundledCalibrationResourcesExist() throws {
         for name in [
@@ -126,5 +134,53 @@ final class CalibrationJobTests: XCTestCase {
         XCTAssertFalse(generation.toolpath.isEmpty)
         XCTAssertEqual(generation.blocks.map(\.value), [0.8, 0.85, 0.9, 0.95, 1, 1.05, 1.1, 1.15, 1.2])
         XCTAssertTrue(try String(contentsOf: output).contains("Bambu Lab A1"))
+    }
+    /// Verify ProjectDocument creation + importModel works in this test class.
+    func testProjectDocumentImportInCalibrationContext() {
+        let document = ProjectDocument()
+        document.importModel(at: repoRoot().appendingPathComponent("Sources/NativeSlicerA1/Resources/Profiles/BBL/bbl-3dp-X1.stl"))
+        XCTAssertNil(document.lastError)
+        XCTAssertEqual(document.objects.count, 1)
+    }
+
+    /// P3-003/Calibration: document-level calibration populates toolpath
+    /// and lastCalibration through the real engine — exercises
+    /// `ProjectDocument.calibrate()` end-to-end.
+    func testDocumentCalibrationPopulatesToolpathAndBlocks() async throws {
+        let document = ProjectDocument()
+        await document.calibrate()
+
+        // Calibration must produce nonempty toolpath and blocks.
+        XCTAssertFalse(document.toolpath.isEmpty)
+        let blocks = document.lastCalibration?.blocks ?? []
+        XCTAssertFalse(blocks.isEmpty)
+        XCTAssertEqual(blocks.map(\.value), [0.8, 0.85, 0.9, 0.95, 1, 1.05, 1.1, 1.15, 1.2])
+        // No error from successful calibration.
+        XCTAssertNil(document.lastError)
+    }
+
+    /// P3-003/Calibration: calibrate() preserves existing scene object IDs
+    /// and yields nonempty toolpath + blocks — verifies calibration
+    /// replaces toolpath, not scene.
+    func testDocumentCalibrationPreservesObjectIDsAndGeneratesToolpath() async throws {
+        let document = ProjectDocument()
+        document.importModel(at: repoRoot().appendingPathComponent("Sources/NativeSlicerA1/Resources/Profiles/BBL/bbl-3dp-X1.stl"))
+        XCTAssertNil(document.lastError)
+        XCTAssertEqual(document.objects.count, 1)
+        let originalIDs = document.objects.map(\.id)
+
+        await document.calibrate()
+
+        // Object IDs must be unchanged (calibration replaces toolpath, not scene).
+        XCTAssertEqual(document.objects.map(\.id), originalIDs)
+        // Existing meshes are untouched.
+        XCTAssertEqual(document.mesh(for: document.objects[0])?.triangleCount, 1016)
+        // Calibration must produce nonempty toolpath and blocks.
+        XCTAssertFalse(document.toolpath.isEmpty)
+        let blocks = document.lastCalibration?.blocks ?? []
+        XCTAssertFalse(blocks.isEmpty)
+        XCTAssertEqual(blocks.map(\.value), [0.8, 0.85, 0.9, 0.95, 1, 1.05, 1.1, 1.15, 1.2])
+        // No error from successful calibration.
+        XCTAssertNil(document.lastError)
     }
 }

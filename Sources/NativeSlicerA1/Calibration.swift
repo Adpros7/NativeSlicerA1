@@ -67,6 +67,7 @@ struct CalibrationBlock: Equatable {
 struct CalibrationGeneration {
     let toolpath: [ToolpathSegment]
     let blocks: [CalibrationBlock]
+    let outputPath: String
 }
 
 enum CalibrationError: Error, Equatable, LocalizedError {

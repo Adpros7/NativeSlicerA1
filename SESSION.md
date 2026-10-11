@@ -35,20 +35,16 @@ are complete. The connectivity-specific source audit is retained in
 `RESEARCH-P0-011-CONNECTIVITY.md`.
 
 ## Current task / progress
-P3-002 design is stored in
-`docs/superpowers/plans/2026-10-11-calibration-workflows.md`. Completed:
-reviewed upstream resources; request/profile/capability validation; and
-the first real flow-rate engine path. `nsa1_generate_calibration_gcode`
-now loads BambuStudio's pass-1 3MF, applies its nine upstream object-name
-`print_flow_ratio` modifiers (0.80 through 1.20) plus its calibration
-process settings, and runs the existing real
-`Print::apply`/`validate`/`process`/`export_gcode` pipeline. The C result
-uses owned toolpath/block buffers with a matching free function; missing
-resources return a controlled error. `CalibrationJobTests` verifies real
-toolpath, all nine blocks, and A1 G-code header. Full suite: 49 tests
-passing. SwiftUI flow controls/result application and the four remaining
-workflows are not implemented yet; next is native flow-rate UI without any
-print/upload action.
+P3-002 flow-rate calibration is complete: a native `Calibration…` SwiftUI
+sheet labels the fixed pass-1 range and active printer/process/filament;
+Generate invokes the real local engine path, updates the existing Metal
+toolpath, retains blocks/output path in `lastCalibration`, preserves scene
+objects, and has no upload/send/print/MQTT path. XCTest verifies resource
+availability, validation/capability errors, bridge missing-resource errors,
+real engine output, and document non-destructive behavior; full suite:
+52 tests passing. Remaining P3-002 workflows: pressure advance,
+temperature tower, retraction, max volumetric speed, then unified result
+application/persistence and a final independent review.
 
 ## Important technical decisions
 - **License**: AGPLv3 (RESEARCH.md P0-004) — required to reuse `libslic3r`.
