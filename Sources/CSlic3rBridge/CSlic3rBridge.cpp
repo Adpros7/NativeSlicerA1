@@ -16,8 +16,8 @@
 #include "libslic3r/PrintConfig.hpp"
 #include "libslic3r/miniz_extension.hpp"
 #include <cstring>
+#include <filesystem>
 #include <memory>
-
 namespace {
 NSA1Mesh *copy_mesh(const Slic3r::TriangleMesh &mesh) {
     const auto &its = mesh.its;
@@ -368,6 +368,127 @@ extern "C" void nsa1_free_toolpath(NSA1Toolpath *toolpath) {
     if (!toolpath) return;
     delete[] toolpath->segments;
     delete toolpath;
+}
+
+extern "C" int nsa1_generate_calibration_gcode(
+    const NSA1CalibrationRequest *request,
+    const char *out_gcode_path,
+    NSA1CalibrationResult **out_result,
+    char **out_error) {
+    if (out_result) *out_result = nullptr;
+    if (out_error) *out_error = nullptr;
+    auto fail = [&](const std::string &message) {
+        if (out_error) *out_error = copy_c_string(message);
+        return -1;
+    };
+    if (!request || !out_gcode_path || !out_result || !out_error)
+        return fail("invalid calibration request");
+    if (request->workflow != NSA1_CALIBRATION_FLOW_RATE)
+        return fail("unsupported calibration workflow");
+    if (!request->resource_path)
+        return fail("missing calibration resource path");
+    std::error_code error;
+    if (!std::filesystem::is_regular_file(request->resource_path, error))
+        return fail("missing calibration resource");
+
+    // Pass 1 is the fixed upstream resource: flow ratios 0.80 through 1.20.
+    constexpr double first_ratio = 0.8;
+    constexpr double last_ratio = 1.2;
+    constexpr double ratio_step = 0.05;
+    if (request->step <= 0 || request->start < first_ratio - 1e-6 ||
+        request->end > last_ratio + 1e-6 ||
+        std::abs(request->start - first_ratio) > 1e-6 ||
+        std::abs(request->end - last_ratio) > 1e-6 ||
+        std::abs(request->step - ratio_step) > 1e-6)
+        return fail("unsupported flow-rate calibration range");
+
+    try {
+        Slic3r::Model model;
+        if (!load_3mf_model(request->resource_path, model))
+            return fail("failed to load calibration resource");
+        Slic3r::DynamicPrintConfig config =
+            build_full_config(request->config_entries, request->config_entry_count);
+
+        const auto *nozzle = config.option<Slic3r::ConfigOptionFloatsNullable>("nozzle_diameter");
+        const float nozzle_diameter = nozzle && !nozzle->values.empty() ? nozzle->values[0] : 0.4f;
+        const double layer_height = nozzle_diameter / 2.0;
+        const auto *initial = config.option<Slic3r::ConfigOptionFloat>("initial_layer_print_height");
+        const double first_layer_height = std::max(initial ? initial->value : layer_height, layer_height);
+        const double zscale = (first_layer_height + 6.0 * layer_height) / 1.4;
+        const float xy_scale = nozzle_diameter / 0.6f;
+        for (auto *object : model.objects) {
+            if (xy_scale > 1.2f) object->scale(xy_scale, xy_scale, zscale);
+            else object->scale(1.0, 1.0, zscale);
+            object->ensure_on_bed();
+            object->config.set_key_value("wall_loops", new Slic3r::ConfigOptionInt(3));
+            object->config.set_key_value("sparse_infill_density", new Slic3r::ConfigOptionPercent(35));
+            object->config.set_key_value("bottom_shell_layers", new Slic3r::ConfigOptionInt(1));
+            object->config.set_key_value("top_shell_layers", new Slic3r::ConfigOptionInt(5));
+            object->config.set_key_value("detect_thin_wall", new Slic3r::ConfigOptionBool(true));
+            std::string name = object->name;
+            if (name.rfind("flowrate_", 0) != 0) return fail("invalid flow-rate calibration resource");
+            name.erase(0, 9);
+            if (!name.empty() && name[0] == 'm') name[0] = '-';
+            const double ratio = 1.0 + std::stod(name) / 100.0;
+            object->config.set_key_value("print_flow_ratio", new Slic3r::ConfigOptionFloat(ratio));
+        }
+        config.set_key_value("layer_height", new Slic3r::ConfigOptionFloat(layer_height));
+        config.set_key_value("initial_layer_print_height", new Slic3r::ConfigOptionFloat(first_layer_height));
+        config.set_key_value("reduce_crossing_wall", new Slic3r::ConfigOptionBool(true));
+        config.set_key_value("enable_wrapping_detection", new Slic3r::ConfigOptionBool(false));
+
+        Slic3r::Print print;
+        print.apply(model, config);
+        Slic3r::StringObjectException validation = print.validate();
+        if (!validation.string.empty()) return fail(validation.string);
+        print.process();
+        Slic3r::GCodeProcessorResult engine_result;
+        print.export_gcode(out_gcode_path, &engine_result);
+
+        std::vector<NSA1ToolpathSegment> segments;
+        segments.reserve(engine_result.moves.size());
+        bool have_prev = false;
+        Slic3r::Vec3f prev{0, 0, 0};
+        for (const auto &move : engine_result.moves) {
+            const bool extrude = move.type == Slic3r::EMoveType::Extrude;
+            const bool travel = move.type == Slic3r::EMoveType::Travel;
+            if (!extrude && !travel) { have_prev = false; continue; }
+            if (have_prev) {
+                NSA1ToolpathSegment segment{};
+                segment.start_x = prev.x(); segment.start_y = prev.y(); segment.start_z = prev.z();
+                segment.end_x = move.position.x(); segment.end_y = move.position.y(); segment.end_z = move.position.z();
+                segment.width = move.width; segment.height = move.height; segment.is_travel = travel ? 1 : 0;
+                segments.push_back(segment);
+            }
+            prev = move.position; have_prev = true;
+        }
+        auto segment_buffer = std::make_unique<NSA1ToolpathSegment[]>(segments.size());
+        std::copy(segments.begin(), segments.end(), segment_buffer.get());
+        auto toolpath = std::make_unique<NSA1Toolpath>(
+            NSA1Toolpath{segment_buffer.get(), segments.size()}
+        );
+        auto blocks = std::make_unique<NSA1CalibrationBlock[]>(9);
+        for (size_t i = 0; i < 9; ++i) {
+            blocks[i] = NSA1CalibrationBlock{i, (80.0 + 5.0 * i) / 100.0, 0, 0};
+        }
+        auto result = std::make_unique<NSA1CalibrationResult>(
+            NSA1CalibrationResult{toolpath.get(), blocks.get(), 9}
+        );
+        segment_buffer.release();
+        toolpath.release();
+        blocks.release();
+        *out_result = result.release();
+        return 0;
+    } catch (const std::exception &e) {
+        return fail(e.what());
+    }
+}
+
+extern "C" void nsa1_free_calibration_result(NSA1CalibrationResult *result) {
+    if (!result) return;
+    nsa1_free_toolpath(result->toolpath);
+    delete[] result->blocks;
+    delete result;
 }
 
 

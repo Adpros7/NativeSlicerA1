@@ -31,6 +31,18 @@ enum CalibrationWorkflow: String, CaseIterable, Hashable {
     case maxVolumetricSpeed
 }
 
+extension CalibrationWorkflow {
+    var bridgeValue: Int32 {
+        switch self {
+        case .flowRate: 0
+        case .pressureAdvance: 1
+        case .temperature: 2
+        case .retraction: 3
+        case .maxVolumetricSpeed: 4
+        }
+    }
+}
+
 typealias CalibrationCapabilities = Set<CalibrationWorkflow>
 
 extension CalibrationCapabilities {
@@ -43,6 +55,18 @@ struct CalibrationRequest: Equatable {
     let end: Double
     let step: Double
     let selection: SlicingJob.ProfileSelection
+}
+
+struct CalibrationBlock: Equatable {
+    let ordinal: Int
+    let value: Double
+    let startZ: Double
+    let endZ: Double
+}
+
+struct CalibrationGeneration {
+    let toolpath: [ToolpathSegment]
+    let blocks: [CalibrationBlock]
 }
 
 enum CalibrationError: Error, Equatable, LocalizedError {

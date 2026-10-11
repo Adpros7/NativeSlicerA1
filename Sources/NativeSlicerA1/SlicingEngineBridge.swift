@@ -235,4 +235,82 @@ enum SlicingEngine {
         }
         return toolpath
     }
+
+    /// Calls the dedicated calibration C ABI. Generation remains entirely
+    /// local: no printer connection, upload, or start-print operation is
+    /// available through this API.
+    static func generateCalibrationGCode(
+        request: CalibrationRequest,
+        resourceURL: URL,
+        configEntries: [(key: String, value: String)],
+        outputPath: String
+    ) throws -> CalibrationGeneration {
+        var errorMessage: String?
+        var generation = CalibrationGeneration(toolpath: [], blocks: [])
+        let result = withNSA1ConfigEntries(configEntries) { cfgPtr, cfgCount in
+            resourceURL.path.withCString { resourcePtr in
+                outputPath.withCString { outputPtr -> Int32 in
+                    var rawResult: UnsafeMutablePointer<NSA1CalibrationResult>?
+                    var rawError: UnsafeMutablePointer<CChar>?
+                    var rawRequest = NSA1CalibrationRequest(
+                        workflow: request.workflow.bridgeValue,
+                        start: request.start,
+                        end: request.end,
+                        step: request.step,
+                        resource_path: resourcePtr,
+                        config_entries: cfgPtr,
+                        config_entry_count: cfgCount
+                    )
+                    let status = nsa1_generate_calibration_gcode(
+                        &rawRequest,
+                        outputPtr,
+                        &rawResult,
+                        &rawError
+                    )
+                    if let rawError {
+                        errorMessage = String(cString: rawError)
+                        nsa1_free_string(rawError)
+                    }
+                    if let rawResult {
+                        defer { nsa1_free_calibration_result(rawResult) }
+                        if let toolpath = rawResult.pointee.toolpath {
+                            let segments = UnsafeBufferPointer(
+                                start: toolpath.pointee.segments,
+                                count: toolpath.pointee.segment_count
+                            )
+                            generation = CalibrationGeneration(
+                                toolpath: segments.map {
+                                    ToolpathSegment(
+                                        start: SIMD3($0.start_x, $0.start_y, $0.start_z),
+                                        end: SIMD3($0.end_x, $0.end_y, $0.end_z),
+                                        width: $0.width,
+                                        height: $0.height,
+                                        isTravel: $0.is_travel != 0
+                                    )
+                                },
+                                blocks: rawResult.pointee.blocks.map {
+                                    UnsafeBufferPointer(
+                                        start: $0,
+                                        count: rawResult.pointee.block_count
+                                    ).map {
+                                        CalibrationBlock(
+                                            ordinal: Int($0.ordinal),
+                                            value: $0.value,
+                                            startZ: $0.start_z,
+                                            endZ: $0.end_z
+                                        )
+                                    }
+                                } ?? []
+                            )
+                        }
+                    }
+                    return status
+                }
+            }
+        }
+        guard result == 0 else {
+            throw SlicingEngineError.sliceFailed(errorMessage ?? "unknown calibration error")
+        }
+        return generation
+    }
 }

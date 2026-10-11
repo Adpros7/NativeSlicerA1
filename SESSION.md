@@ -37,16 +37,18 @@ are complete. The connectivity-specific source audit is retained in
 ## Current task / progress
 P3-002 design is stored in
 `docs/superpowers/plans/2026-10-11-calibration-workflows.md`. Completed:
-Task 1's five exact BambuStudio AGPLv3 calibration assets (flow pass
-1/2, temperature tower, retraction tower, volumetric-speed STEP),
-provenance, resource lookup, and red→green XCTest; Task 2's
-`CalibrationRequest`/`CalibrationWorkflow` pure validation. The
-validator first reuses `SlicingJob.validate` for machine/process/filament
-compatibility, accepts ascending or descending calibration ranges with a
-positive finite step and a 200-block cap, and requires an explicit
-capability set (so PA cannot be inferred from the printer name). Full
-suite: 47 tests passing. Next: bridge ABI/resource failure path, then
-real flow-rate generation.
+reviewed upstream resources; request/profile/capability validation; and
+the first real flow-rate engine path. `nsa1_generate_calibration_gcode`
+now loads BambuStudio's pass-1 3MF, applies its nine upstream object-name
+`print_flow_ratio` modifiers (0.80 through 1.20) plus its calibration
+process settings, and runs the existing real
+`Print::apply`/`validate`/`process`/`export_gcode` pipeline. The C result
+uses owned toolpath/block buffers with a matching free function; missing
+resources return a controlled error. `CalibrationJobTests` verifies real
+toolpath, all nine blocks, and A1 G-code header. Full suite: 49 tests
+passing. SwiftUI flow controls/result application and the four remaining
+workflows are not implemented yet; next is native flow-rate UI without any
+print/upload action.
 
 ## Important technical decisions
 - **License**: AGPLv3 (RESEARCH.md P0-004) — required to reuse `libslic3r`.

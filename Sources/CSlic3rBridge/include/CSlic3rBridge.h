@@ -131,6 +131,59 @@ int nsa1_slice_to_gcode(
     NSA1Toolpath **out_toolpath,
     char **out_error);
 
+/// Numeric values map to `CalibrationWorkflow` in Swift. Kept as a fixed
+/// int32_t in the request so C callers do not depend on C++ enum layout.
+enum {
+    NSA1_CALIBRATION_FLOW_RATE,
+    NSA1_CALIBRATION_PRESSURE_ADVANCE,
+    NSA1_CALIBRATION_TEMPERATURE,
+    NSA1_CALIBRATION_RETRACTION,
+    NSA1_CALIBRATION_MAX_VOLUMETRIC_SPEED,
+};
+
+/// A requested real-engine calibration generation. `resource_path` must be
+/// an app-bundled upstream model selected by Swift, never arbitrary user
+/// input. The bridge still validates that it can be read. Config entries use
+/// the exact resolved-profile format accepted by `nsa1_slice_to_gcode`.
+typedef struct {
+    int32_t workflow;
+    double start;
+    double end;
+    double step;
+    const char *resource_path;
+    const NSA1ConfigEntry *config_entries;
+    size_t config_entry_count;
+} NSA1CalibrationRequest;
+
+/// One generated calibration value. Z bounds are filled only by a successful
+/// workflow that knows them; the resource-validation path returns no result.
+typedef struct {
+    size_t ordinal;
+    double value;
+    double start_z;
+    double end_z;
+} NSA1CalibrationBlock;
+
+typedef struct {
+    NSA1Toolpath *toolpath;
+    NSA1CalibrationBlock *blocks;
+    size_t block_count;
+} NSA1CalibrationResult;
+
+/// Validates and generates calibration G-code through the real engine. This
+/// operation never uploads, sends, or starts a printer action. On failure
+/// `*out_error` is a newly allocated message freed by `nsa1_free_string`.
+int nsa1_generate_calibration_gcode(
+    const NSA1CalibrationRequest *request,
+    const char *out_gcode_path,
+    NSA1CalibrationResult **out_result,
+    char **out_error);
+
+/// Releases every allocation in a successful calibration result. Safe with
+/// NULL; `toolpath` follows the same ownership convention as
+/// `nsa1_free_toolpath`.
+void nsa1_free_calibration_result(NSA1CalibrationResult *result);
+
 /// Releases a toolpath returned by `nsa1_slice_to_gcode`'s `out_toolpath`.
 /// Safe to call with NULL.
 void nsa1_free_toolpath(NSA1Toolpath *toolpath);
