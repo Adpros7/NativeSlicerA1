@@ -18,14 +18,114 @@ enum SlicingEngineError: Error {
 /// One real toolpath line segment from the engine's own
 /// `GCodeProcessorResult` (P1-009) — the same per-move data BambuStudio's
 /// own G-code preview consumes.
+/// View modes for G-code toolpath coloring (P1-012). Matches upstream
+/// `EViewType` from `GCodeRenderer`: `FeatureType`, `Height`,
+/// `Feedrate`, `Temperature`, `LayerTime`, `Tool`.
+enum ToolpathViewMode: String, CaseIterable, Identifiable {
+    case featureType = "Feature Type"
+    case height = "Layer Height"
+    case feedrate = "Feed Rate"
+    case temperature = "Temperature"
+    case layerTime = "Layer Time"
+    case tool = "Tool"
+
+    var id: String { rawValue }
+}
 struct ToolpathSegment {
     let start: SIMD3<Float>
     let end: SIMD3<Float>
     let width: Float
     let height: Float
     let isTravel: Bool
-}
+    /// Extrusion feed rate in mm/min (0 for travel moves).
+    let feedrate: Float
+    /// Nozzle temperature in °C (0 if not set).
+    let temperature: Float
+    /// Layer time in seconds (0 if not set).
+    let layerDuration: Float
+    /// Extruder ID (0-based index).
+    let extruderID: Int32
+    /// Extrusion role: 0=perimeter, 1=inner-perimeter, 2=outer-perimeter,
+    /// 3=infill, 4=support, 5=bridge, 6=fill-skin, 7=skirt, 8=brim,
+    /// 9=support-interface, 10=skirt-loop (upstream `ExtrusionRole` enum).
+    let extrusionRole: Float
 
+    /// Computes a color for this segment based on the given view mode.
+    /// Uses the same upstream approach: min-max normalized colormap
+    /// (viridis-like) with logarithmic scaling for layer time.
+    func color(for viewMode: ToolpathViewMode) -> SIMD3<Float> {
+        switch viewMode {
+        case .featureType:
+            return extrusionRoleColor()
+        case .height:
+            return normalizedColor(height, minVal: 0.05, maxVal: 1.0)
+        case .feedrate:
+            return normalizedColor(feedrate, minVal: 50, maxVal: 5000)
+        case .temperature:
+            return normalizedColor(temperature, minVal: 180, maxVal: 260)
+        case .layerTime:
+            return normalizedLogColor(layerDuration, minVal: 0.1, maxVal: 30)
+        case .tool:
+            return toolColor()
+        }
+    }
+
+    private func extrusionRoleColor() -> SIMD3<Float> {
+        // Discrete colors per upstream `Extrusion_Role_Colors`.
+        switch Int(extrusionRole) {
+        case 0: return SIMD3(0.95, 0.55, 0.15)  // perimeter (orange)
+        case 1: return SIMD3(0.85, 0.45, 0.10)  // inner-perimeter
+        case 2: return SIMD3(1.0, 0.65, 0.20)   // outer-perimeter
+        case 3: return SIMD3(0.4, 0.7, 0.3)     // infill (green)
+        case 4: return SIMD3(0.3, 0.5, 0.9)     // support (blue)
+        case 5: return SIMD3(0.6, 0.8, 0.5)     // bridge
+        case 6: return SIMD3(0.7, 0.6, 0.4)     // fill-skin
+        case 7, 8: return SIMD3(0.6, 0.6, 0.6)  // skirt/brim (gray)
+        case 9: return SIMD3(0.5, 0.4, 0.8)     // support-interface
+        default: return SIMD3(0.6, 0.6, 0.6)    // unknown → gray
+        }
+    }
+
+    private func toolColor() -> SIMD3<Float> {
+        // Per-tool colors: cycle through distinct hues.
+        let hues: [SIMD3<Float>] = [
+            SIMD3(0.95, 0.55, 0.15),  // orange (default extrude)
+            SIMD3(0.2, 0.6, 0.9),    // blue
+            SIMD3(0.3, 0.8, 0.3),    // green
+            SIMD3(0.9, 0.2, 0.5),    // pink
+            SIMD3(0.8, 0.8, 0.2),    // yellow
+            SIMD3(0.5, 0.3, 0.8),    // purple
+        ]
+        return hues[Int(extruderID) % hues.count]
+    }
+
+    /// Maps a value through a viridis-like colormap (min→purple, max→yellow).
+    private func normalizedColor(_ value: Float, minVal: Float, maxVal: Float) -> SIMD3<Float> {
+        let t = max(0, min(1, (value - minVal) / max(0.001, maxVal - minVal)))
+        return viridisColor(t)
+    }
+
+    /// Logarithmic version: maps log(value) through the colormap.
+    private func normalizedLogColor(_ value: Float, minVal: Float, maxVal: Float) -> SIMD3<Float> {
+        let minLog = log(max(0.001, minVal))
+        let maxLog = log(max(0.001, maxVal))
+        let t = max(0, min(1, (log(max(0.001, value)) - minLog) / max(0.001, maxLog - minLog)))
+        return viridisColor(t)
+    }
+
+    /// Viridis colormap approximation (public-domain, from igl/colormap.cpp).
+    /// Maps t ∈ [0,1] to an RGB color: purple→blue→green→yellow.
+    private func viridisColor(_ t: Float) -> SIMD3<Float> {
+        // Simplified 5-segment piecewise approximation of the 256-entry viridis palette.
+        let t3 = t * t
+        let t4 = t3 * t
+        // Close approximation: purple (0) → blue → green → yellow (1)
+        let r: Float = 0.267 + 2.5 * t - 5.0 * t3 + 3.5 * t4
+        let g: Float = 0.005 + 2.0 * t - 4.0 * t3 + 3.0 * t4
+        let b: Float = 0.329 + 0.5 * t + 1.0 * t3 - 1.7 * t4
+        return SIMD3(max(0, min(1, r)), max(0, min(1, g)), max(0, min(1, b)))
+    }
+}
 /// A real-geometry mesh loaded through the engine bridge: flat vertex (XYZ
 /// triples) and triangle index buffers, ready to upload to a Metal vertex
 /// buffer.
@@ -305,13 +405,18 @@ enum SlicingEngine {
                         defer { nsa1_free_toolpath(toolpathPtr) }
                         let segs = UnsafeBufferPointer(start: toolpathPtr.pointee.segments, count: toolpathPtr.pointee.segment_count)
                         toolpath = segs.map {
-                            ToolpathSegment(
-                                start: SIMD3($0.start_x, $0.start_y, $0.start_z),
-                                end: SIMD3($0.end_x, $0.end_y, $0.end_z),
-                                width: $0.width,
-                                height: $0.height,
-                                isTravel: $0.is_travel != 0
-                            )
+                                                                ToolpathSegment(
+                                        start: SIMD3($0.start_x, $0.start_y, $0.start_z),
+                                        end: SIMD3($0.end_x, $0.end_y, $0.end_z),
+                                        width: $0.width,
+                                        height: $0.height,
+                                        isTravel: $0.is_travel != 0,
+                                        feedrate: $0.feedrate,
+                                        temperature: $0.temperature,
+                                        layerDuration: $0.layer_duration,
+                                        extruderID: Int32($0.extruder_id),
+                                        extrusionRole: $0.extrusion_role,
+                                    )
                         }
                     }
                     return r
@@ -375,13 +480,18 @@ enum SlicingEngine {
                         defer { nsa1_free_toolpath(toolpathPtr) }
                         let segs = UnsafeBufferPointer(start: toolpathPtr.pointee.segments, count: toolpathPtr.pointee.segment_count)
                         toolpath = segs.map {
-                            ToolpathSegment(
-                                start: SIMD3($0.start_x, $0.start_y, $0.start_z),
-                                end: SIMD3($0.end_x, $0.end_y, $0.end_z),
-                                width: $0.width,
-                                height: $0.height,
-                                isTravel: $0.is_travel != 0
-                            )
+                                                                ToolpathSegment(
+                                        start: SIMD3($0.start_x, $0.start_y, $0.start_z),
+                                        end: SIMD3($0.end_x, $0.end_y, $0.end_z),
+                                        width: $0.width,
+                                        height: $0.height,
+                                        isTravel: $0.is_travel != 0,
+                                        feedrate: $0.feedrate,
+                                        temperature: $0.temperature,
+                                        layerDuration: $0.layer_duration,
+                                        extruderID: Int32($0.extruder_id),
+                                        extrusionRole: $0.extrusion_role,
+                                    )
                         }
                     }
                     if let statsPtr {
@@ -461,12 +571,17 @@ enum SlicingEngine {
                             )
                             generation = CalibrationGeneration(
                                 toolpath: segments.map {
-                                    ToolpathSegment(
+                                                                        ToolpathSegment(
                                         start: SIMD3($0.start_x, $0.start_y, $0.start_z),
                                         end: SIMD3($0.end_x, $0.end_y, $0.end_z),
                                         width: $0.width,
                                         height: $0.height,
-                                        isTravel: $0.is_travel != 0
+                                        isTravel: $0.is_travel != 0,
+                                        feedrate: $0.feedrate,
+                                        temperature: $0.temperature,
+                                        layerDuration: $0.layer_duration,
+                                        extruderID: Int32($0.extruder_id),
+                                        extrusionRole: $0.extrusion_role,
                                     )
                                 },
                                 blocks: rawResult.pointee.blocks.map {

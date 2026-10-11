@@ -13,8 +13,10 @@ final class ProjectDocument: ObservableObject {
     @Published var lastError: String?
     @Published private(set) var toolpath: [ToolpathSegment] = []
     @Published private(set) var isSlicing = false
+    /// G-code toolpath view mode (P1-012): controls how segments are colored.
+    /// G-code toolpath view mode (P1-012): controls how segments are colored.
+    @Published var toolpathViewMode: ToolpathViewMode = .featureType
     @Published private(set) var lastCalibration: CalibrationGeneration?
-    /// Printer/process/filament profile choice and setting overrides
     /// (P3-003) — applied by `slice()` and persisted by `save(to:)`/
     /// `load(from:)` via the 3MF project's embedded config.
     @Published var profileSelection = SlicingJob.ProfileSelection()

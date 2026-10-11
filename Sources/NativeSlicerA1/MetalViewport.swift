@@ -111,9 +111,11 @@ final class MetalRenderer: NSObject, MTKViewDelegate {
 
     /// Uploads a real-geometry toolpath (P1-009, `SlicingJob.slice`'s
     /// return value) as a GPU line-list buffer: two colored vertices per
-    /// segment, extrude moves in orange, travel moves in translucent gray.
+    /// segment. When `viewMode` is nil (default), uses the original
+    /// hardcoded extrude=orange/travel=gray coloring. When set, computes
+    /// per-mode colors from the segment's real engine data.
     /// Replaces any previously uploaded toolpath.
-    func setToolpath(_ segments: [ToolpathSegment]) {
+    func setToolpath(_ segments: [ToolpathSegment], viewMode: ToolpathViewMode? = nil) {
         guard !segments.isEmpty else {
             toolpathBuffer = nil
             toolpathVertexCount = 0
@@ -122,7 +124,7 @@ final class MetalRenderer: NSObject, MTKViewDelegate {
         var floats: [Float] = []
         floats.reserveCapacity(segments.count * 12)
         for seg in segments {
-            let color: SIMD3<Float> = seg.isTravel ? SIMD3(0.6, 0.6, 0.6) : SIMD3(0.95, 0.55, 0.15)
+            let color: SIMD3<Float> = viewMode.map { seg.color(for: $0) } ?? (seg.isTravel ? SIMD3(0.6, 0.6, 0.6) : SIMD3(0.95, 0.55, 0.15))
             floats.append(contentsOf: [seg.start.x, seg.start.y, seg.start.z, color.x, color.y, color.z])
             floats.append(contentsOf: [seg.end.x, seg.end.y, seg.end.z, color.x, color.y, color.z])
         }
@@ -248,6 +250,7 @@ struct MetalViewport: NSViewRepresentable {
         renderer.renderObjects = document.objects.map {
             RenderObject(id: $0.id, meshID: $0.sourceMeshID, transform: $0.transform.matrix, selected: $0.id == document.selection)
         }
-        renderer.setToolpath(document.toolpath)
+        let vm = document.toolpathViewMode
+        renderer.setToolpath(document.toolpath, viewMode: vm)
     }
 }

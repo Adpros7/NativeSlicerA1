@@ -25,7 +25,13 @@ struct ContentView: View {
                 Button("Calibration…") { showingCalibration = true }
                 Button("Settings…") { showingSettings = true }
                 Button(document.isSlicing ? "Slicing…" : "Slice", action: document.slice)
-                    .disabled(document.objects.isEmpty || document.isSlicing)
+                // G-code view mode picker (P1-012)
+                Menu("View Mode") {
+                    ForEach(ToolpathViewMode.allCases) { mode in
+                        Button(mode.rawValue) { document.toolpathViewMode = mode }
+                            .foregroundColor(document.toolpathViewMode == mode ? .accentColor : .primary)
+                    }
+                }
             }
         }
         .sheet(isPresented: $showingSettings) {
