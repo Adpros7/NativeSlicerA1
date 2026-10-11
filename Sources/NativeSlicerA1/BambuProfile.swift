@@ -9,6 +9,14 @@ struct BambuProfile {
     let fields: [String: Any]
 
     var inherits: String? { fields["inherits"] as? String }
+    /// Sibling fragment profiles merged in after the `inherits` chain but
+    /// before this profile's own fields (see `resolve` below) — e.g. the
+    /// A1 0.4 nozzle machine profile's per-nozzle custom G-code templates
+    /// (`machine_start_gcode`/`machine_end_gcode`/etc., each its own
+    /// `"instantiation": "false"` template file, not independently
+    /// selectable). Upstream key: `BBL_JSON_KEY_INCLUDES` ("include"),
+    /// `PresetBundle.cpp`.
+    var includes: [String] { fields["include"] as? [String] ?? [] }
 }
 
 enum BambuProfileError: Error, Equatable {
@@ -44,8 +52,21 @@ struct BambuProfileLoader {
         }
     }
 
-    /// Returns the fully-resolved field set for `name`: its own fields
-    /// merged over every ancestor's fields, walking `inherits` to the root.
+    /// Returns the fully-resolved field set for `name`: its ancestor
+    /// chain's fields (via `inherits`, recursively to the root), then each
+    /// `include` fragment's own fields merged on top in list order, then
+    /// `name`'s own fields winning last — the same three-tier precedence
+    /// `PresetBundle.cpp`'s `load_system_models`/`load_system_filaments`
+    /// use (`config = *default_config` → `config.apply_only(include_config,
+    /// include_config.diff(include_default_config))` per include → `config
+    /// .apply(config_src)`). Each `include` profile is a flat template with
+    /// no `inherits` of its own (verified: every vendored `*template*gcode*
+    /// .json` has exactly one real field besides `name`/`instantiation`),
+    /// so using its fields directly is equivalent to upstream's
+    /// diff-against-default restriction without needing the full default
+    /// closure here — downstream (`nsa1_slice_to_gcode`) already drops any
+    /// resolved key that isn't a real engine config option, so template
+    /// metadata (`name`/`instantiation`) merged in along the way is inert.
     func resolve(_ name: String) throws -> [String: Any] {
         guard let profile = profiles[name] else { throw BambuProfileError.profileNotFound(name) }
         var resolved: [String: Any] = [:]
@@ -54,6 +75,12 @@ struct BambuProfileLoader {
                 throw BambuProfileError.missingAncestor(child: name, ancestor: parentName)
             }
             resolved = try resolve(parentName)
+        }
+        for includeName in profile.includes {
+            guard let includeProfile = profiles[includeName] else {
+                throw BambuProfileError.missingAncestor(child: name, ancestor: includeName)
+            }
+            for (key, value) in includeProfile.fields { resolved[key] = value }
         }
         for (key, value) in profile.fields {
             resolved[key] = value

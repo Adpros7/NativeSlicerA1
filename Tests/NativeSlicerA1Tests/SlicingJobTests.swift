@@ -51,6 +51,69 @@ final class SlicingJobTests: XCTestCase {
         XCTAssertGreaterThan(gcode.split(separator: "\n").count, 100)
     }
 
+    /// Regression test for the `DynamicPrintConfig::full_print_config()`
+    /// null-`keys_map` bug (ARCHITECTURE.md P1-008 "Upstream bug found and
+    /// worked around"). Covers both affected option variants: `gcode_flavor`
+    /// is a scalar `coEnum` (`PrintConfig.cpp`: `this->add("gcode_flavor",
+    /// coEnum)`), set by the vendored A1 machine profile
+    /// (`fdm_machine_common.json: "gcode_flavor": "marlin"`);
+    /// `overhang_fan_threshold` is a per-extruder array `coEnums`
+    /// (`this->add("overhang_fan_threshold", coEnums)`), set by the PLA
+    /// filament profile. Both already go through every slice's
+    /// enum-deserialize code path, but this test asserts specifically on
+    /// the values surviving into the real G-code header's config block —
+    /// proving both the `set_deserialize()` overlay and the engine's own
+    /// later `serialize()` of the same options succeeded, not just "no
+    /// crash". Disabling the repair pass in `CSlic3rBridge.cpp` reproduces
+    /// a real SIGSEGV on this exact test (verified manually: null
+    /// `ConfigOptionEnumsGenericTempl::deserialize` deref).
+    func testEnumProfileOptionsSurviveRepairedKeysMap() throws {
+        let loader = try BambuProfileLoader()
+        let outputDir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: outputDir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: outputDir) }
+        let outputPath = outputDir.appendingPathComponent("enum_check.gcode").path
+
+        // Confirm the resolved A1 profile really does set these keys
+        // (otherwise the assertions below would pass vacuously on the
+        // engine's own built-in defaults).
+        let entries = try SlicingJob.resolvedConfigEntries(loader: loader)
+        XCTAssertEqual(entries.first(where: { $0.key == "gcode_flavor" })?.value, "marlin")
+        XCTAssertEqual(entries.first(where: { $0.key == "overhang_fan_threshold" })?.value, "50%")
+
+        try SlicingJob.slice(
+            objects: [(mesh: cubeMesh(), transform: matrix_identity_float4x4)],
+            loader: loader,
+            outputPath: outputPath
+        )
+
+        let gcode = try String(contentsOfFile: outputPath, encoding: .utf8)
+        XCTAssertTrue(gcode.contains("gcode_flavor = marlin"), "expected the A1 profile's scalar coEnum override, correctly re-serialized by the engine, in the G-code config header")
+        XCTAssertTrue(gcode.contains("overhang_fan_threshold = 50%"), "expected the A1 profile's array coEnums override, correctly re-serialized by the engine, in the G-code config header")
+    }
+
+    /// Closes the P1-008/P3-003 "per-nozzle include templates not
+    /// resolved" known gap (ARCHITECTURE.md): the A1-specific
+    /// `machine_start_gcode` template (resolved via `BambuProfileLoader`'s
+    /// `include` support) must actually reach the real engine's output,
+    /// not just the resolved config dictionary.
+    func testIncludedA1StartGCodeReachesRealOutput() throws {
+        let loader = try BambuProfileLoader()
+        let outputDir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: outputDir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: outputDir) }
+        let outputPath = outputDir.appendingPathComponent("include_check.gcode").path
+
+        try SlicingJob.slice(
+            objects: [(mesh: cubeMesh(), transform: matrix_identity_float4x4)],
+            loader: loader,
+            outputPath: outputPath
+        )
+
+        let gcode = try String(contentsOfFile: outputPath, encoding: .utf8)
+        XCTAssertTrue(gcode.contains("M9833.2"), "expected the A1-specific included machine_start_gcode template in the real sliced output, not the generic engine default")
+    }
+
     func testEmptySceneThrows() throws {
         let loader = try BambuProfileLoader()
         let outputPath = FileManager.default.temporaryDirectory.appendingPathComponent("\(UUID().uuidString).gcode").path

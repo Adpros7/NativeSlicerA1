@@ -73,14 +73,45 @@ seeding: walk every currently-present option, and for any `coEnum`/
 non-nullable (`ConfigOptionEnumsGeneric`) and nullable
 (`ConfigOptionEnumsGenericNullable`) variants.
 
-**Known gap:** the per-nozzle-variant `"include"` key (custom
-start/end/layer-change G-code template references, e.g. `Bambu Lab A1 0.4
-nozzle template machine_start_gcode.json`) is not resolved by
-`BambuProfileLoader`/the bridge — only `inherits` chains are. Slicing
-currently uses the engine's own default start/end G-code rather than the
-A1-specific templates. Tracked as a follow-up, not blocking real G-code
-generation (P1-008's acceptance: real engine, real A1 profile fields,
-real multi-layer G-code output — verified by `SlicingJobTests`).
+**No better upstream fix exists for our use case:** `full_print_config()`
+has exactly one other real caller in the vendored tree, `Calib.cpp:693`
+(`DynamicPrintConfig full_defaults = DynamicPrintConfig::full_print_config();
+full_defaults.apply(m_config, true);`) — it never calls
+`deserialize()`/`serialize()` on the raw broken defaults directly; it
+immediately `.apply()`s an already-correctly-keyed config over it, which
+copies option values without touching `keys_map`. `nsa1_slice_to_gcode`
+can't use that pattern: it needs `set_deserialize()` to parse the A1
+profile's config strings (`BambuProfileLoader`'s resolved
+string-typed fields) into typed options, which is exactly the path that
+needs `keys_map`. The targeted repair pass is the minimal fix.
+
+**Verified as a genuine regression, not a theoretical one:** temporarily
+removing the repair pass and rebuilding reproduces a real SIGSEGV
+(signal 11) on `SlicingJobTests.testEnumProfileOptionsSurviveRepairedKeysMap`
+(and `testSlicesCubeIntoRealGCode`) — confirmed by running the test suite
+against the unpatched binary, not inferred. That test (added alongside
+this verification) asserts on two real A1-profile-set enum options
+surviving into the actual G-code header: `gcode_flavor` (scalar `coEnum`,
+`fdm_machine_common.json`) and `overhang_fan_threshold` (per-extruder
+array `coEnums`, `fdm_filament_pla.json`) — covering both repaired option
+variants, not just "no crash".
+
+**Known gap, now resolved:** the per-nozzle-variant `"include"` key
+(custom start/end/layer-change G-code template references, e.g. `Bambu
+Lab A1 0.4 nozzle template machine_start_gcode.json`) is now resolved by
+`BambuProfileLoader.resolve`, mirroring `PresetBundle.cpp`'s
+`load_system_models`/`load_system_filaments` three-tier precedence
+(`config = *default_config` → each `include` profile's own fields applied
+in list order → the profile's own fields win last). Each vendored
+`*template*gcode*.json` has no `inherits` of its own and exactly one real
+field besides `name`/`instantiation`, so merging its fields directly is
+equivalent to upstream's `include_config.diff(include_default_config)`
+restriction without needing the full default-preset closure here.
+Verified by `BambuProfileLoaderTests.testResolvesIncludedGCodeTemplates`
+(resolved `machine_start_gcode` contains the A1-specific `M9833.2` marker
+absent from the generic `fdm_machine_common` ancestor) and
+`SlicingJobTests.testIncludedA1StartGCodeReachesRealOutput` (the marker
+reaches the real sliced G-code file, not just the resolved config dict).
 
 Verified by `SlicingJobTests.testSlicesCubeIntoRealGCode`: a real 20mm
 cube mesh, sliced through the real engine with the real vendored A1
