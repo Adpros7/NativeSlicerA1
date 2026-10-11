@@ -3,6 +3,7 @@ import UniformTypeIdentifiers
 
 struct ContentView: View {
     @StateObject private var document = ProjectDocument()
+    @State private var showingSettings = false
 
     var body: some View {
         NavigationSplitView {
@@ -20,9 +21,13 @@ struct ContentView: View {
                     .disabled(document.objects.isEmpty)
                 Button("Delete", action: deleteSelection)
                     .disabled(document.selection == nil)
+                Button("Settings…") { showingSettings = true }
                 Button(document.isSlicing ? "Slicing…" : "Slice", action: document.slice)
                     .disabled(document.objects.isEmpty || document.isSlicing)
             }
+        }
+        .sheet(isPresented: $showingSettings) {
+            SlicingSettingsView(document: document)
         }
         .alert("Error", isPresented: Binding(
             get: { document.lastError != nil },

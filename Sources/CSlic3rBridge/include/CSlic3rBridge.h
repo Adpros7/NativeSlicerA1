@@ -60,12 +60,6 @@ typedef struct {
     const double *matrix16;
 } NSA1SceneObject;
 
-/// Writes `object_count` placed objects to a 3MF project file via
-/// libslic3r's `store_3mf` (the same writer BambuStudio/OrcaSlicer use for
-/// their own project format — P1-007). Returns 0 on success, -1 on
-/// failure.
-int nsa1_store_3mf(const char *path, const NSA1SceneObject *objects, size_t object_count);
-
 /// One `key = value` config entry, already serialized to libslic3r's own
 /// config string format (the same format `BambuProfileLoader`'s resolved
 /// JSON fields use: scalars as-is, arrays joined with `,` — matching
@@ -74,6 +68,30 @@ typedef struct {
     const char *key;
     const char *value;
 } NSA1ConfigEntry;
+
+/// Writes `object_count` placed objects, plus the full A1 engine config
+/// resolved from `config_entries` (same seeding/null-keys_map-repair/
+/// overlay as `nsa1_slice_to_gcode`), to a 3MF project file via
+/// libslic3r's `store_3mf` (the same writer BambuStudio/OrcaSlicer use for
+/// their own project format — P1-007). `config_entries` lets profile
+/// selection and setting overrides persist across saves, not just
+/// geometry (P3-003). Returns 0 on success, -1 on failure.
+int nsa1_store_3mf(
+    const char *path, const NSA1SceneObject *objects, size_t object_count,
+    const NSA1ConfigEntry *config_entries, size_t config_entry_count);
+
+/// Reads back every config key embedded by `nsa1_store_3mf` from a 3MF
+/// project file via libslic3r's own `load_3mf` (P3-003 settings
+/// persistence), as an array of `NSA1ConfigEntry`. `*out_count` is set to
+/// the array length. Returns NULL (and `*out_count = 0`) on failure or if
+/// the file has no embedded config (e.g. a bare P1-007-era project).
+/// Free the result with `nsa1_free_config_entries`.
+NSA1ConfigEntry *nsa1_load_3mf_config(const char *path, size_t *out_count);
+
+/// Releases an array returned by `nsa1_load_3mf_config`. Safe to call
+/// with NULL/0.
+void nsa1_free_config_entries(NSA1ConfigEntry *entries, size_t count);
+
 
 /// One real toolpath segment from the engine's own `GCodeProcessorResult`
 /// (the same per-move data BambuStudio's own G-code preview consumes):

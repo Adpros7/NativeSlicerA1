@@ -17,11 +17,25 @@ struct BambuProfile {
     /// selectable). Upstream key: `BBL_JSON_KEY_INCLUDES` ("include"),
     /// `PresetBundle.cpp`.
     var includes: [String] { fields["include"] as? [String] ?? [] }
+    /// `"machine"`/`"process"`/`"filament"`.
+    var type: String? { fields["type"] as? String }
+    /// Whether this profile is directly user-selectable, vs. an abstract
+    /// ancestor (`fdm_machine_common`) or `include` template fragment
+    /// (`instantiation == "false"`) — the same filter BambuStudio's own
+    /// preset picker uses (P3-003).
+    var isInstantiable: Bool { (fields["instantiation"] as? String) == "true" }
+    /// Machine profile names this process/filament profile is declared
+    /// compatible with; `nil` means no declared restriction (every
+    /// vendored A1 process/filament profile declares this).
+    var compatiblePrinters: [String]? { fields["compatible_printers"] as? [String] }
 }
 
 enum BambuProfileError: Error, Equatable {
     case profileNotFound(String)
     case missingAncestor(child: String, ancestor: String)
+    /// `profile` isn't declared compatible with `machine` (P3-003
+    /// validation — `compatible_printers` doesn't list `machine`).
+    case incompatibleProfile(profile: String, machine: String)
 }
 
 /// Loads vendored Bambu A1 printer/process/filament profiles and resolves
@@ -90,4 +104,22 @@ struct BambuProfileLoader {
 
     func profile(named name: String) -> BambuProfile? { profiles[name] }
     var allProfileNames: [String] { Array(profiles.keys) }
+
+    /// Vendored A1 profile names of `type` ("machine"/"process"/
+    /// "filament") that are directly user-selectable, sorted for stable
+    /// UI ordering (P3-003 printer/process/filament pickers).
+    func instantiableProfileNames(type: String) -> [String] {
+        profiles.values.filter { $0.type == type && $0.isInstantiable }.map(\.name).sorted()
+    }
+
+    /// Whether `name` (a process or filament profile) is declared
+    /// compatible with `machineName` — the same `compatible_printers`
+    /// check BambuStudio's own preset picker uses to grey out invalid
+    /// combinations (P3-003 "invalid combinations rejected safely").
+    /// Unknown `name` is treated as incompatible.
+    func isCompatible(_ name: String, withMachine machineName: String) -> Bool {
+        guard let profile = profiles[name] else { return false }
+        guard let list = profile.compatiblePrinters else { return true }
+        return list.contains(machineName)
+    }
 }

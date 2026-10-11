@@ -44,6 +44,31 @@ final class BambuProfileLoaderTests: XCTestCase {
         XCTAssertNotEqual(startGCode, genericStartGCode)
     }
 
+    /// P3-003 "invalid combinations rejected safely": the vendored
+    /// closure includes an X1-series process profile that declares itself
+    /// compatible only with X1-series machines, not the A1 — exercising
+    /// real `compatible_printers` data, not a synthetic fixture.
+    func testInstantiableProfileNamesFiltersByTypeAndInstantiation() throws {
+        let loader = try BambuProfileLoader()
+        let machines = loader.instantiableProfileNames(type: "machine")
+        XCTAssertEqual(machines, machines.sorted(), "expected a stable sorted order for UI pickers")
+        XCTAssertTrue(machines.contains("Bambu Lab A1 0.4 nozzle"))
+        // Ancestors/templates aren't directly selectable.
+        XCTAssertFalse(machines.contains("fdm_machine_common"))
+        XCTAssertFalse(machines.contains("Bambu Lab A1 0.4 nozzle template machine_start_gcode"))
+    }
+
+    func testIsCompatibleUsesRealCompatiblePrintersField() throws {
+        let loader = try BambuProfileLoader()
+        XCTAssertTrue(loader.isCompatible("0.20mm Standard @BBL A1", withMachine: "Bambu Lab A1 0.4 nozzle"))
+        // A 0.2mm-nozzle-only process profile is not valid for the 0.4
+        // nozzle machine.
+        XCTAssertFalse(loader.isCompatible("0.10mm Standard @BBL A1 0.2 nozzle", withMachine: "Bambu Lab A1 0.4 nozzle"))
+        // An X1-series process profile is never valid for any A1 machine.
+        XCTAssertFalse(loader.isCompatible("0.16mm Optimal @BBL X1C", withMachine: "Bambu Lab A1 0.4 nozzle"))
+        XCTAssertFalse(loader.isCompatible("does not exist", withMachine: "Bambu Lab A1 0.4 nozzle"))
+    }
+
     func testUnknownProfileThrows() throws {
         let loader = try BambuProfileLoader()
         XCTAssertThrowsError(try loader.resolve("does not exist")) { error in

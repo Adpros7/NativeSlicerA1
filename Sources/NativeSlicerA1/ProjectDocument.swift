@@ -13,6 +13,10 @@ final class ProjectDocument: ObservableObject {
     @Published var lastError: String?
     @Published private(set) var toolpath: [ToolpathSegment] = []
     @Published private(set) var isSlicing = false
+    /// Printer/process/filament profile choice and setting overrides
+    /// (P3-003) — applied by `slice()` and persisted by `save(to:)`/
+    /// `load(from:)` via the 3MF project's embedded config.
+    @Published var profileSelection = SlicingJob.ProfileSelection()
 
     func mesh(for object: SceneObject) -> LoadedMesh? { meshes[object.sourceMeshID] }
 
@@ -83,39 +87,46 @@ final class ProjectDocument: ObservableObject {
     }
 
     /// Saves the scene as a 3MF project file via the real engine's
-    /// `store_3mf` (P1-007) — the same format/writer BambuStudio and
-    /// OrcaSlicer use for their own project files.
+    /// `store_3mf` (P1-007), including the resolved `profileSelection`
+    /// config (P3-003) so profile/override choices survive a reload.
     func save(to url: URL) {
         let payload = objects.compactMap { object -> (mesh: LoadedMesh, transform: simd_float4x4)? in
             guard let mesh = meshes[object.sourceMeshID] else { return nil }
             return (mesh, object.transform.matrix)
         }
         do {
-            try SlicingEngine.storeThreeMF(atPath: url.path, objects: payload)
+            let loader = try BambuProfileLoader()
+            let configEntries = try SlicingJob.resolvedConfigEntries(loader: loader, selection: profileSelection)
+            try SlicingEngine.storeThreeMF(atPath: url.path, objects: payload, configEntries: configEntries)
+            lastError = nil
         } catch {
             lastError = "Save failed: \(error)"
         }
     }
 
-    /// Loads a previously saved 3MF project. The current scene is replaced
-    /// only after the complete new scene has been parsed successfully.
+    /// Loads a previously saved 3MF project, including its embedded
+    /// profile selection/overrides (P3-003) if present. The current scene
+    /// is replaced only after the complete new scene has been parsed
+    /// successfully.
     func load(from url: URL) {
         do {
             let loaded = try loadScene(at: url)
+            let configEntries = SlicingEngine.loadThreeMFConfig(atPath: url.path)
             meshes = loaded.meshes
             objects = loaded.objects
             selection = loaded.objects.last?.id
+            profileSelection = SlicingJob.restoreSelection(from: configEntries)
             lastError = nil
         } catch {
             lastError = "Load failed: \(error)"
         }
     }
 
-    /// Slices every placed object with the default A1 profile and
-    /// uploads the real resulting toolpath for viewport preview (P1-009).
-    /// Runs the (potentially slow) real engine pipeline off the main
-    /// actor so the UI stays responsive; `isSlicing` drives a progress
-    /// indicator.
+    /// Slices every placed object with `profileSelection`'s resolved A1
+    /// profile (P3-003) and uploads the real resulting toolpath for
+    /// viewport preview (P1-009). Runs the (potentially slow) real engine
+    /// pipeline off the main actor so the UI stays responsive; `isSlicing`
+    /// drives a progress indicator.
     func slice() {
         guard !objects.isEmpty, !isSlicing else { return }
         isSlicing = true
@@ -123,11 +134,12 @@ final class ProjectDocument: ObservableObject {
             guard let mesh = meshes[object.sourceMeshID] else { return nil }
             return (mesh, object.transform.matrix)
         }
+        let selection = profileSelection
         let outputPath = FileManager.default.temporaryDirectory.appendingPathComponent("\(UUID().uuidString).gcode").path
         Task.detached { [weak self] in
             do {
                 let loader = try BambuProfileLoader()
-                let segments = try SlicingJob.slice(objects: placed, loader: loader, outputPath: outputPath)
+                let segments = try SlicingJob.slice(objects: placed, loader: loader, selection: selection, outputPath: outputPath)
                 await MainActor.run { [weak self] in
                     guard let self else { return }
                     self.toolpath = segments

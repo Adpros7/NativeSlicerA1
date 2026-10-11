@@ -93,4 +93,38 @@ final class ProjectDocumentTests: XCTestCase {
         XCTAssertEqual(actual.y, expected.y, accuracy: 0.01)
         XCTAssertEqual(actual.z, expected.z, accuracy: 0.01)
     }
+
+    /// P3-003 "settings and overrides persist across project saves and
+    /// reloads", exercised at the `ProjectDocument` level (not just
+    /// `SlicingJob`'s in-memory round trip): a non-default profile
+    /// selection plus an override, saved to a real 3MF and reloaded into
+    /// a fresh document, must come back exactly — proving the embedded
+    /// config actually makes the save->reload trip through the real
+    /// engine's `store_3mf`/`load_3mf`, not just through Swift state.
+    func testSaveThenLoadRoundTripsProfileSelectionAndOverrides() throws {
+        let document = ProjectDocument()
+        document.importModel(at: stlURL)
+        XCTAssertNil(document.lastError)
+
+        document.profileSelection.machine = "Bambu Lab A1 0.6 nozzle"
+        document.profileSelection.process = "0.30mm Strength @BBL A1 0.6 nozzle"
+        document.profileSelection.filament = "Bambu PLA Basic @BBL A1"
+        document.profileSelection.overrides["layer_height"] = "0.24"
+
+        let projectURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("nsa1-settings-roundtrip-\(UUID().uuidString).3mf")
+        defer { try? FileManager.default.removeItem(at: projectURL) }
+
+        document.save(to: projectURL)
+        XCTAssertNil(document.lastError)
+
+        let reloaded = ProjectDocument()
+        reloaded.load(from: projectURL)
+
+        XCTAssertNil(reloaded.lastError)
+        XCTAssertEqual(reloaded.profileSelection.machine, "Bambu Lab A1 0.6 nozzle")
+        XCTAssertEqual(reloaded.profileSelection.process, "0.30mm Strength @BBL A1 0.6 nozzle")
+        XCTAssertEqual(reloaded.profileSelection.filament, "Bambu PLA Basic @BBL A1")
+        XCTAssertEqual(reloaded.profileSelection.overrides["layer_height"], "0.24")
+    }
 }

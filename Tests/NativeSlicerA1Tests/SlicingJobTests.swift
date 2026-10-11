@@ -114,6 +114,80 @@ final class SlicingJobTests: XCTestCase {
         XCTAssertTrue(gcode.contains("M9833.2"), "expected the A1-specific included machine_start_gcode template in the real sliced output, not the generic engine default")
     }
 
+    /// P3-003 "selected settings actually affect generated G-code": a
+    /// `layer_height` override changes the real engine's real layer
+    /// count, not just a config entry that's silently dropped.
+    func testLayerHeightOverrideChangesRealLayerCount() throws {
+        let loader = try BambuProfileLoader()
+
+        func totalLayers(layerHeightOverride: String?) throws -> Int {
+            var selection = SlicingJob.ProfileSelection()
+            if let override = layerHeightOverride {
+                selection.overrides["layer_height"] = override
+            }
+            let outputDir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+            try FileManager.default.createDirectory(at: outputDir, withIntermediateDirectories: true)
+            let outputPath = outputDir.appendingPathComponent("layer_height.gcode").path
+            try SlicingJob.slice(objects: [(mesh: cubeMesh(), transform: matrix_identity_float4x4)], loader: loader, selection: selection, outputPath: outputPath)
+            let gcode = try String(contentsOfFile: outputPath, encoding: .utf8)
+            guard let line = gcode.split(separator: "\n").first(where: { $0.contains("total layer number") }),
+                  let countString = line.split(separator: ":").last,
+                  let count = Int(countString.trimmingCharacters(in: .whitespaces))
+            else {
+                XCTFail("expected a '; total layer number: N' header line")
+                return 0
+            }
+            return count
+        }
+
+        let defaultLayers = try totalLayers(layerHeightOverride: nil)
+        let finerLayers = try totalLayers(layerHeightOverride: "0.08")
+        XCTAssertEqual(defaultLayers, 100) // 20mm / 0.2mm default
+        XCTAssertEqual(finerLayers, 249) // 20mm / 0.08mm, matching the real slicer's own layer accounting
+        XCTAssertGreaterThan(finerLayers, defaultLayers)
+    }
+
+    /// P3-003 "invalid combinations are rejected safely": a process
+    /// profile declared compatible only with X1-series machines
+    /// (`compatible_printers`), picked against an A1 machine, must fail
+    /// validation before ever reaching the engine — not silently slice
+    /// with mismatched settings or crash.
+    func testIncompatibleProcessProfileRejectedBeforeSlicing() throws {
+        let loader = try BambuProfileLoader()
+        var selection = SlicingJob.ProfileSelection()
+        selection.process = "0.16mm Optimal @BBL X1C"
+        let outputPath = FileManager.default.temporaryDirectory.appendingPathComponent("\(UUID().uuidString).gcode").path
+
+        XCTAssertThrowsError(try SlicingJob.slice(objects: [(mesh: cubeMesh(), transform: matrix_identity_float4x4)], loader: loader, selection: selection, outputPath: outputPath)) { error in
+            XCTAssertEqual(error as? BambuProfileError, .incompatibleProfile(profile: "0.16mm Optimal @BBL X1C", machine: selection.machine))
+        }
+        XCTAssertFalse(FileManager.default.fileExists(atPath: outputPath), "an invalid combination must not produce partial G-code output")
+    }
+
+    /// P3-003 "settings and overrides persist across project saves and
+    /// reloads": `restoreSelection` must reconstruct the exact profile
+    /// choice and override values `resolvedConfigEntries` wrote, round
+    /// tripping through the real serialized config-entry string format
+    /// (not a parallel in-memory-only representation).
+    func testRestoreSelectionRoundTripsThroughResolvedConfigEntries() throws {
+        let loader = try BambuProfileLoader()
+        var selection = SlicingJob.ProfileSelection()
+        selection.machine = "Bambu Lab A1 0.6 nozzle"
+        selection.process = "0.30mm Strength @BBL A1 0.6 nozzle"
+        selection.filament = "Bambu PLA Basic @BBL A1"
+        selection.overrides = ["layer_height": "0.24", "wall_loops": "3", "enable_support": "1"]
+
+        let entries = try SlicingJob.resolvedConfigEntries(loader: loader, selection: selection)
+        let restored = SlicingJob.restoreSelection(from: entries)
+
+        XCTAssertEqual(restored.machine, selection.machine)
+        XCTAssertEqual(restored.process, selection.process)
+        XCTAssertEqual(restored.filament, selection.filament)
+        XCTAssertEqual(restored.overrides["layer_height"], "0.24")
+        XCTAssertEqual(restored.overrides["wall_loops"], "3")
+        XCTAssertEqual(restored.overrides["enable_support"], "1")
+    }
+
     func testEmptySceneThrows() throws {
         let loader = try BambuProfileLoader()
         let outputPath = FileManager.default.temporaryDirectory.appendingPathComponent("\(UUID().uuidString).gcode").path

@@ -198,3 +198,95 @@ Layer boundaries (AGENTS.md section 5):
   suite (`tests/` in BambuStudio) unmodified for the slicing core — do not
   duplicate upstream test coverage.
 - CI: deferred until P1 foundation exists (no code to test yet).
+
+## P3-003: Advanced slicing settings (printer/process/filament pickers, setting overrides, persistence)
+
+Extends the existing profile/config machinery rather than inventing a
+parallel settings model:
+
+- **Profile pickers** (`SlicingSettingsView`): `BambuProfileLoader` gained
+  `instantiableProfileNames(type:)` and `isCompatible(_:withMachine:)`,
+  reading the same `"type"`/`"instantiation"`/`"compatible_printers"`
+  fields BambuStudio's own preset picker filters on (`PresetBundle.cpp`).
+  Process/filament pickers are filtered live to the selected machine's
+  compatible set; switching machines snaps any now-incompatible
+  selection to the first compatible option.
+- **Overrides**: `SlicingJob.ProfileSelection` gained an
+  `overrides: [String: String]` dict keyed by real libslic3r config
+  option names (`layer_height`, `wall_loops`, `sparse_infill_density`,
+  `enable_support`, `nozzle_temperature`, `hot_plate_temp` —
+  `SlicingJob.overridableKeys`), applied last in
+  `resolvedConfigEntries` so they win over the selected process/filament
+  profile's own values. The settings UI reads displayed values from the
+  same `resolvedConfigEntries` merge (`effectiveValues`), so an untouched
+  slider shows the real profile default, not a hardcoded guess.
+- **Validation** (requirement: "invalid combinations are rejected
+  safely"): `SlicingJob.validate` checks `compatible_printers` and is
+  called automatically inside `resolvedConfigEntries` — every slice and
+  every save is validated server-side, not just the UI picker's
+  client-side filtering (defense in depth: a saved project with a
+  stale/corrupted selection still fails safely with
+  `BambuProfileError.incompatibleProfile` instead of silently slicing
+  with a mismatched profile or crashing the engine).
+- **Persistence** (requirement: "settings and overrides persist across
+  project saves and reloads"): reuses libslic3r's own project-config
+  channel rather than an invented side-file. `nsa1_store_3mf` now also
+  takes `config_entries` and writes the fully resolved+repaired
+  `DynamicPrintConfig` into the 3MF's `Metadata/Slic3r_PE.config` entry
+  (the real `_add_print_config_file_to_archive` writer BambuStudio's own
+  3mf exporter uses). Profile *choice* (not just numeric overrides) is
+  recorded via the same real engine keys BambuStudio itself uses to
+  remember a project's preset selection: `printer_settings_id`,
+  `print_settings_id`, `filament_settings_id`
+  (`PrintConfig.cpp`).
+
+  **Upstream gap found and worked around:** `Slic3r::load_3mf`'s
+  `DynamicPrintConfig&` out-param is never actually populated — the
+  archive-entry branch that would read `Metadata/Slic3r_PE.config` back
+  (`PRINT_CONFIG_FILE` in `3mf.cpp`'s importer) is inside a
+  `/* ... */`-commented-out block. The write path
+  (`_add_print_config_file_to_archive`) is live; the matching read path
+  isn't — BambuStudio's own GUI apparently restores project settings
+  through its separate `src/slic3r/GUI` preset-bundle layer instead,
+  which isn't vendored here (ARCHITECTURE.md P0-005 — GUI layer
+  deliberately out of scope). Worked around in `nsa1_load_3mf_config` by
+  reading the same archive entry directly, using the same
+  `miniz_extension.hpp` helpers (`open_zip_reader`/`mz_zip_reader_*`)
+  `3mf.cpp` itself uses internally, then parsing it with the real
+  engine's own `ConfigBase::load_from_gcode_string_legacy` — the exact
+  format `_add_print_config_file_to_archive` writes (semicolon-commented
+  `; key = value` lines), not a reimplemented parser.
+
+  One real format subtlety hit and handled: `filament_settings_id` is
+  libslic3r's `coStrings` (array) type, whose real `serialize()`
+  (`ConfigOptionStrings`, `Config.cpp`) C-style-quotes any element
+  containing a space (`escape_strings_cstyle`) — every vendored A1
+  filament profile name has one. `SlicingJob.restoreSelection` strips
+  that single surrounding quote pair back off.
+
+- **Settings UI → real G-code**: a `layer_height` override measurably
+  changes the real engine's layer count (verified:
+  `SlicingJobTests.testLayerHeightOverrideChangesRealLayerCount`, 100 →
+  249 layers for 0.2mm → 0.08mm on a 20mm cube) — proving overrides
+  reach `Print::process()`, not just the config dictionary.
+- **AMS Lite compatibility**: every vendored A1 filament profile is
+  already one AMS Lite validates against (RESEARCH-P0-008.md); the
+  filament picker's `instantiableProfileNames(type: "filament")` list
+  *is* the AMS-Lite-compatible list by construction — no separate filter
+  needed (SPEC.md A1-only, single-material scope; P2-006 handles AMS
+  slot mapping separately once a filament is chosen).
+- **Per-nozzle custom G-code templates**: already resolved by P1-008's
+  follow-up fix (see above, `BambuProfileLoader.resolve`'s `include`
+  support) — the settings UI's machine picker selects between the A1
+  nozzle variants, each with its own real `include`d G-code templates,
+  not just a `nozzle_diameter` number.
+- **Independent code review** (subagent): confirmed C++ memory safety
+  (`nsa1_load_3mf_config`'s zip-archive handling closes on every path,
+  `nsa1_free_config_entries` matches the allocation pattern) and flagged
+  one real gap — `SlicingSettingsView`'s machine-switch snap logic fell
+  back to keeping a now-incompatible process/filament selection if no
+  compatible replacement existed, deferring the failure to the next
+  slice/save instead of surfacing it immediately. Fixed: that branch now
+  sets `document.lastError` right away. Unreachable with the real
+  vendored A1 closure (every nozzle variant has ≥1 compatible process and
+  filament, verified directly), but cheap to harden regardless.

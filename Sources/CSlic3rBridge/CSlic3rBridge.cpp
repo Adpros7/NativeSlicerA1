@@ -14,6 +14,7 @@
 #include "libslic3r/Format/3mf.hpp"
 #include "libslic3r/Print.hpp"
 #include "libslic3r/PrintConfig.hpp"
+#include "libslic3r/miniz_extension.hpp"
 #include <cstring>
 #include <memory>
 
@@ -152,12 +153,138 @@ char *copy_c_string(const std::string &s) {
     std::memcpy(out, s.c_str(), s.size() + 1);
     return out;
 }
+
+// Upstream bug workaround: `FullPrintConfig::defaults()` clones each
+// option's raw `ConfigOptionDef::default_value`, but for `coEnum`/
+// `coEnums` options that default value was constructed without its
+// `keys_map` (only `ConfigOptionDef::create_default_option()` wires that
+// up). Any such option — most of `full_print_config()`'s seeded set — has
+// a null `keys_map` and segfaults the moment anything calls
+// `deserialize()`/`serialize()` on it. Repair every such option in place.
+// Shared by every path that seeds a config via `full_print_config()`
+// (`build_full_config`) or hands one back out via `serialize()`
+// (`nsa1_load_3mf_config`, defensively).
+void repair_enum_keys_map(Slic3r::DynamicPrintConfig &config) {
+    for (const std::string &key : config.keys()) {
+        const Slic3r::ConfigOptionDef *optdef = config.def()->get(key);
+        if (optdef == nullptr || optdef->enum_keys_map == nullptr) {
+            continue;
+        }
+        Slic3r::ConfigOption *opt = config.option(key);
+        if (auto *e = dynamic_cast<Slic3r::ConfigOptionEnumGeneric *>(opt)) {
+            if (e->keys_map == nullptr) e->keys_map = optdef->enum_keys_map;
+        } else if (auto *es = dynamic_cast<Slic3r::ConfigOptionEnumsGeneric *>(opt)) {
+            if (es->keys_map == nullptr) es->keys_map = optdef->enum_keys_map;
+        } else if (auto *esn = dynamic_cast<Slic3r::ConfigOptionEnumsGenericNullable *>(opt)) {
+            if (esn->keys_map == nullptr) esn->keys_map = optdef->enum_keys_map;
+        }
+    }
+}
+
+// Seeds every `FullPrintConfig` default (nozzle/bed/process/filament
+// option definitions), repairs the null-`keys_map` bug above, then
+// overlays `config_entries` on top — the same shape `BambuProfileLoader`
+// resolves (SPEC.md A1-only scope) plus any P3-003 UI overrides, reusing
+// libslic3r's own config system rather than reimplementing option typing/
+// validation. Shared by `nsa1_slice_to_gcode` (slicing) and
+// `nsa1_store_3mf` (P3-003 settings persistence) so both seed/repair/
+// overlay identically.
+Slic3r::DynamicPrintConfig build_full_config(const NSA1ConfigEntry *config_entries, size_t config_entry_count) {
+    Slic3r::DynamicPrintConfig config = Slic3r::DynamicPrintConfig::full_print_config();
+    repair_enum_keys_map(config);
+
+    Slic3r::ConfigSubstitutionContext substitutions(Slic3r::ForwardCompatibilitySubstitutionRule::Disable);
+    for (size_t i = 0; i < config_entry_count; ++i) {
+        const std::string key = config_entries[i].key;
+        if (config.def()->get(key) == nullptr) {
+            continue; // profile metadata (name/inherits/setting_id/…), not a real engine option
+        }
+        config.set_deserialize(key, config_entries[i].value, substitutions);
+    }
+    config.normalize_fdm();
+    return config;
+}
 } // namespace
 
-extern "C" int nsa1_store_3mf(const char *path, const NSA1SceneObject *objects, size_t object_count) {
+extern "C" int nsa1_store_3mf(
+    const char *path, const NSA1SceneObject *objects, size_t object_count,
+    const NSA1ConfigEntry *config_entries, size_t config_entry_count) {
     Slic3r::Model model = build_model_from_objects(objects, object_count);
-    Slic3r::DynamicPrintConfig config;
+    Slic3r::DynamicPrintConfig config = build_full_config(config_entries, config_entry_count);
     return Slic3r::store_3mf(path, &model, &config, /*fullpath_sources=*/true) ? 0 : -1;
+}
+
+extern "C" NSA1ConfigEntry *nsa1_load_3mf_config(const char *path, size_t *out_count) {
+    *out_count = 0;
+
+    // `Slic3r::load_3mf`'s own `DynamicPrintConfig&` out-param is always
+    // left empty: the archive-entry case that would populate it
+    // (`PRINT_CONFIG_FILE`/"Metadata/Slic3r_PE.config", written by
+    // `nsa1_store_3mf` via `store_3mf`'s `_add_print_config_file_to_archive`)
+    // is inside a `/* ... */`-commented-out block in `3mf.cpp`'s importer
+    // — upstream write path is live, the matching read path isn't (BambuStudio's
+    // own GUI apparently restores project settings through its separate
+    // `src/slic3r/GUI` preset-bundle layer instead, which isn't vendored
+    // here — ARCHITECTURE.md P0-005). So this bridge reads the same
+    // archive entry directly via the same `miniz_extension.hpp` helpers
+    // `3mf.cpp` itself uses, then parses it with the real engine's own
+    // `ConfigBase::load_from_gcode_string_legacy` (the format
+    // `_add_print_config_file_to_archive` writes — semicolon-commented
+    // `key = value` lines — is the same one that parser is built to read,
+    // not a new format invented here).
+    mz_zip_archive archive;
+    mz_zip_zero_struct(&archive);
+    if (!Slic3r::open_zip_reader(&archive, path)) {
+        return nullptr;
+    }
+    int file_index = mz_zip_reader_locate_file(&archive, "Metadata/Slic3r_PE.config", nullptr, 0);
+    if (file_index < 0) {
+        Slic3r::close_zip_reader(&archive);
+        return nullptr; // no embedded config (e.g. a pre-P3-003 project)
+    }
+    mz_zip_archive_file_stat stat;
+    if (!mz_zip_reader_file_stat(&archive, file_index, &stat)) {
+        Slic3r::close_zip_reader(&archive);
+        return nullptr;
+    }
+    std::string buffer(static_cast<size_t>(stat.m_uncomp_size), '\0');
+    mz_bool extracted = mz_zip_reader_extract_file_to_mem(&archive, stat.m_filename, buffer.data(), buffer.size(), 0);
+    Slic3r::close_zip_reader(&archive);
+    if (!extracted) {
+        return nullptr;
+    }
+
+    Slic3r::DynamicPrintConfig config;
+    Slic3r::ConfigSubstitutionContext substitutions(Slic3r::ForwardCompatibilitySubstitutionRule::Disable);
+    Slic3r::ConfigBase::load_from_gcode_string_legacy(config, buffer.c_str(), substitutions);
+    repair_enum_keys_map(config); // defensive: see repair_enum_keys_map's comment
+
+    std::vector<std::string> keys = config.keys();
+    if (keys.empty()) {
+        return nullptr;
+    }
+    auto *entries = new NSA1ConfigEntry[keys.size()];
+    size_t n = 0;
+    for (const std::string &key : keys) {
+        const Slic3r::ConfigOption *opt = config.option(key);
+        if (opt == nullptr) {
+            continue;
+        }
+        entries[n].key = copy_c_string(key);
+        entries[n].value = copy_c_string(opt->serialize());
+        ++n;
+    }
+    *out_count = n;
+    return entries;
+}
+
+extern "C" void nsa1_free_config_entries(NSA1ConfigEntry *entries, size_t count) {
+    if (!entries) return;
+    for (size_t i = 0; i < count; ++i) {
+        delete[] entries[i].key;
+        delete[] entries[i].value;
+    }
+    delete[] entries;
 }
 
 extern "C" int nsa1_slice_to_gcode(
@@ -176,48 +303,7 @@ extern "C" int nsa1_slice_to_gcode(
             return -1;
         }
         Slic3r::Model model = build_model_from_objects(objects, object_count);
-
-        // Seed every FullPrintConfig default (nozzle/bed/process/filament
-        // option definitions), then overlay the resolved A1 profile fields
-        // on top — the same shape BambuProfileLoader already resolves
-        // (SPEC.md A1-only scope), reusing libslic3r's own config system
-        // rather than reimplementing option typing/validation.
-        Slic3r::DynamicPrintConfig config = Slic3r::DynamicPrintConfig::full_print_config();
-
-        // Upstream bug workaround: `FullPrintConfig::defaults()` clones
-        // each option's raw `ConfigOptionDef::default_value`, but for
-        // `coEnum`/`coEnums` options that default value was constructed
-        // without its `keys_map` (only `ConfigOptionDef::create_default_option()`
-        // wires that up). Any such option — most of `full_print_config()`'s
-        // seeded set — has a null `keys_map` and segfaults the moment
-        // anything calls `deserialize()`/`serialize()` on it (overriding
-        // it below, or the engine embedding it in the G-code header's
-        // config block later). Repair every such option in place first.
-        for (const std::string &key : config.keys()) {
-            const Slic3r::ConfigOptionDef *optdef = config.def()->get(key);
-            if (optdef == nullptr || optdef->enum_keys_map == nullptr) {
-                continue;
-            }
-            Slic3r::ConfigOption *opt = config.option(key);
-            if (auto *e = dynamic_cast<Slic3r::ConfigOptionEnumGeneric *>(opt)) {
-                if (e->keys_map == nullptr) e->keys_map = optdef->enum_keys_map;
-            } else if (auto *es = dynamic_cast<Slic3r::ConfigOptionEnumsGeneric *>(opt)) {
-                if (es->keys_map == nullptr) es->keys_map = optdef->enum_keys_map;
-            } else if (auto *esn = dynamic_cast<Slic3r::ConfigOptionEnumsGenericNullable *>(opt)) {
-                if (esn->keys_map == nullptr) esn->keys_map = optdef->enum_keys_map;
-            }
-        }
-
-        Slic3r::ConfigSubstitutionContext substitutions(Slic3r::ForwardCompatibilitySubstitutionRule::Disable);
-        for (size_t i = 0; i < config_entry_count; ++i) {
-            const std::string key = config_entries[i].key;
-            if (config.def()->get(key) == nullptr) {
-                continue; // profile metadata (name/inherits/setting_id/…), not a real engine option
-            }
-            config.set_deserialize(key, config_entries[i].value, substitutions);
-        }
-
-        config.normalize_fdm();
+        Slic3r::DynamicPrintConfig config = build_full_config(config_entries, config_entry_count);
 
         Slic3r::Print print;
         print.apply(model, config);

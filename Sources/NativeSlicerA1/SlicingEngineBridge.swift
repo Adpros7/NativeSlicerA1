@@ -152,17 +152,38 @@ enum SlicingEngine {
         return raw.withUnsafeBufferPointer(unflatten)
     }
 
-    /// Writes `objects` (each a mesh plus its placement matrix) to a 3MF
-    /// project file via the real engine's `store_3mf` — P1-007's project
-    /// persistence, reusing the same writer BambuStudio/OrcaSlicer use.
-    static func storeThreeMF(atPath path: String, objects: [(mesh: LoadedMesh, transform: simd_float4x4)]) throws {
+    /// Writes `objects` (each a mesh plus its placement matrix) plus
+    /// `configEntries` (resolved A1 profile selection + P3-003 overrides)
+    /// to a 3MF project file via the real engine's `store_3mf` — P1-007's
+    /// project persistence, reusing the same writer BambuStudio/OrcaSlicer
+    /// use, extended (P3-003) to also embed the full resolved config so
+    /// profile/override selection survives a save/reload round trip.
+    static func storeThreeMF(atPath path: String, objects: [(mesh: LoadedMesh, transform: simd_float4x4)], configEntries: [(key: String, value: String)]) throws {
         let pending = objects.map {
             PendingSceneObject(vertices: $0.mesh.vertices, indices: $0.mesh.indices, matrix16: flatten($0.transform))
         }
-        let result = withNSA1SceneObjects(pending) { ptr, count in
-            path.withCString { nsa1_store_3mf($0, ptr, count) }
+        let result = withNSA1SceneObjects(pending) { objPtr, objCount in
+            withNSA1ConfigEntries(configEntries) { cfgPtr, cfgCount in
+                path.withCString { nsa1_store_3mf($0, objPtr, objCount, cfgPtr, cfgCount) }
+            }
         }
         guard result == 0 else { throw SlicingEngineError.failedToWrite3MF(path: path) }
+    }
+
+    /// Reads back the config embedded by `storeThreeMF` from a 3MF project
+    /// file via the real engine's `load_3mf` (P3-003 settings persistence).
+    /// Returns an empty array for a project with no embedded config (e.g.
+    /// one saved before P3-003).
+    static func loadThreeMFConfig(atPath path: String) -> [(key: String, value: String)] {
+        var count = 0
+        guard let raw = path.withCString({ cpath in nsa1_load_3mf_config(cpath, &count) }) else {
+            return []
+        }
+        defer { nsa1_free_config_entries(raw, count) }
+        return (0..<count).map { i in
+            let entry = raw[i]
+            return (String(cString: entry.key), String(cString: entry.value))
+        }
     }
 
     /// Slices `objects` (mesh + placement matrix) with `configEntries` (A1
