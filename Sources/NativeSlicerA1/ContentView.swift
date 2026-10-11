@@ -20,6 +20,8 @@ struct ContentView: View {
                     .disabled(document.objects.isEmpty)
                 Button("Delete", action: deleteSelection)
                     .disabled(document.selection == nil)
+                Button(document.isSlicing ? "Slicing…" : "Slice", action: document.slice)
+                    .disabled(document.objects.isEmpty || document.isSlicing)
             }
         }
         .alert("Error", isPresented: Binding(

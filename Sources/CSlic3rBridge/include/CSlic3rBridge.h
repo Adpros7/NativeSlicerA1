@@ -75,6 +75,24 @@ typedef struct {
     const char *value;
 } NSA1ConfigEntry;
 
+/// One real toolpath segment from the engine's own `GCodeProcessorResult`
+/// (the same per-move data BambuStudio's own G-code preview consumes):
+/// a straight line from `(start_x,start_y,start_z)` to `(end_x,end_y,end_z)`,
+/// `is_travel` true for non-extruding (travel) moves, `width`/`height` the
+/// extrusion cross-section in mm (0 for travel moves).
+typedef struct {
+    float start_x, start_y, start_z;
+    float end_x, end_y, end_z;
+    float width;
+    float height;
+    uint8_t is_travel;
+} NSA1ToolpathSegment;
+
+typedef struct {
+    const NSA1ToolpathSegment *segments;
+    size_t segment_count;
+} NSA1Toolpath;
+
 /// Slices `object_count` placed objects (mesh + column-major placement
 /// matrix, same convention as `NSA1SceneObject`) with the resolved A1
 /// printer/process/filament config and writes real G-code to
@@ -83,15 +101,26 @@ typedef struct {
 /// failure. On failure, `*out_error` is set to a newly allocated
 /// human-readable message (free with `nsa1_free_string`); on success
 /// `*out_error` is set to NULL.
+///
+/// If `out_toolpath` is non-NULL, it's set to the real per-move toolpath
+/// data the engine's own `GCodeProcessorResult` already computed while
+/// writing the G-code file (P1-009) — free with `nsa1_free_toolpath`. Set
+/// to NULL on failure or if `out_toolpath` was itself NULL.
 int nsa1_slice_to_gcode(
     const NSA1SceneObject *objects, size_t object_count,
     const NSA1ConfigEntry *config_entries, size_t config_entry_count,
     const char *out_gcode_path,
+    NSA1Toolpath **out_toolpath,
     char **out_error);
+
+/// Releases a toolpath returned by `nsa1_slice_to_gcode`'s `out_toolpath`.
+/// Safe to call with NULL.
+void nsa1_free_toolpath(NSA1Toolpath *toolpath);
 
 /// Releases a string returned by `nsa1_slice_to_gcode`'s `out_error`. Safe
 /// to call with NULL.
 void nsa1_free_string(char *s);
+
 
 #ifdef __cplusplus
 }

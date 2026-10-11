@@ -89,6 +89,39 @@ machine/process/filament profile closure, produces a real multi-layer
 (`; BambuStudio 02.08.04.61`, `; nozzle_diameter = 0.4`, printer
 identification) — manually inspected, not just asserted in-test.
 
+## P1-009: G-code visualization (real toolpath from the engine's own `GCodeProcessorResult`)
+
+`Print::export_gcode` already computes a full per-move toolpath
+(`GCodeProcessorResult::moves`, used internally by BambuStudio's own
+G-code preview) — P1-008's bridge call was discarding it. P1-009 exposes
+it instead of recomputing anything: `nsa1_slice_to_gcode` gained an
+optional `NSA1Toolpath **out_toolpath` parameter. For each consecutive
+pair of `Extrude`/`Travel` moves it emits one `NSA1ToolpathSegment`
+(start/end position, width, height, travel flag); non-move events
+(retract, seam, tool change, …) break the polyline so segments never
+bridge unrelated moves.
+
+Swift side: `SlicingEngine.sliceToGCode`/`SlicingJob.slice` now return
+`[ToolpathSegment]`. `MetalRenderer.setToolpath` uploads it as a single
+GPU line-list buffer (interleaved position+color, extrude orange / travel
+gray) and draws it with a dedicated compiled line pipeline
+(`toolpath_vertex`/`toolpath_fragment` in `Shaders.swift`) alongside the
+existing mesh pipeline — no mesh preview code was touched.
+
+`ProjectDocument.slice()` runs the (potentially slow) real pipeline via
+`Task.detached` off the `@MainActor`, so the UI stays responsive;
+`isSlicing` drives the toolbar button's disabled/label state. A fresh
+`BambuProfileLoader()` is constructed per slice rather than cached on the
+document — cheap (reads vendored JSON once per call) and avoids any
+actor-isolation complexity for a loader with no mutable state.
+
+Verified by `MetalRendererTests.testDrawEncodesRealToolpathFromRealSlice`:
+a real cube, sliced through the full P1-008 pipeline, yields a real
+multi-hundred-segment toolpath (with real extrusion segments present,
+not just travel) that uploads and draws without crashing against the
+compiled GPU pipeline.
+
+
 
 ## P0-006: Metal rendering architecture
 

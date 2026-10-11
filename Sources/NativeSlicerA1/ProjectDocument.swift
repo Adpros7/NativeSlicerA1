@@ -11,6 +11,8 @@ final class ProjectDocument: ObservableObject {
     @Published private(set) var objects: [SceneObject] = []
     @Published var selection: UUID?
     @Published var lastError: String?
+    @Published private(set) var toolpath: [ToolpathSegment] = []
+    @Published private(set) var isSlicing = false
 
     func mesh(for object: SceneObject) -> LoadedMesh? { meshes[object.sourceMeshID] }
 
@@ -106,6 +108,38 @@ final class ProjectDocument: ObservableObject {
             lastError = nil
         } catch {
             lastError = "Load failed: \(error)"
+        }
+    }
+
+    /// Slices every placed object with the default A1 profile and
+    /// uploads the real resulting toolpath for viewport preview (P1-009).
+    /// Runs the (potentially slow) real engine pipeline off the main
+    /// actor so the UI stays responsive; `isSlicing` drives a progress
+    /// indicator.
+    func slice() {
+        guard !objects.isEmpty, !isSlicing else { return }
+        isSlicing = true
+        let placed = objects.compactMap { object -> (mesh: LoadedMesh, transform: simd_float4x4)? in
+            guard let mesh = meshes[object.sourceMeshID] else { return nil }
+            return (mesh, object.transform.matrix)
+        }
+        let outputPath = FileManager.default.temporaryDirectory.appendingPathComponent("\(UUID().uuidString).gcode").path
+        Task.detached { [weak self] in
+            do {
+                let loader = try BambuProfileLoader()
+                let segments = try SlicingJob.slice(objects: placed, loader: loader, outputPath: outputPath)
+                await MainActor.run { [weak self] in
+                    guard let self else { return }
+                    self.toolpath = segments
+                    self.isSlicing = false
+                }
+            } catch {
+                await MainActor.run { [weak self] in
+                    guard let self else { return }
+                    self.lastError = "Slice failed: \(error)"
+                    self.isSlicing = false
+                }
+            }
         }
     }
 }

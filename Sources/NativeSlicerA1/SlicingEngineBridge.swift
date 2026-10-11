@@ -11,6 +11,17 @@ enum SlicingEngineError: Error {
     case sliceFailed(String)
 }
 
+/// One real toolpath line segment from the engine's own
+/// `GCodeProcessorResult` (P1-009) — the same per-move data BambuStudio's
+/// own G-code preview consumes.
+struct ToolpathSegment {
+    let start: SIMD3<Float>
+    let end: SIMD3<Float>
+    let width: Float
+    let height: Float
+    let isTravel: Bool
+}
+
 /// A real-geometry mesh loaded through the engine bridge: flat vertex (XYZ
 /// triples) and triangle index buffers, ready to upload to a Metal vertex
 /// buffer.
@@ -157,24 +168,42 @@ enum SlicingEngine {
     /// Slices `objects` (mesh + placement matrix) with `configEntries` (A1
     /// profile fields resolved by `SlicingJob`) and writes real G-code to
     /// `outputPath` via the real engine's `Print::apply`/`validate`/
-    /// `process`/`export_gcode` pipeline (P1-008).
+    /// `process`/`export_gcode` pipeline (P1-008). Returns the real
+    /// per-move toolpath the engine computed while writing that G-code
+    /// (P1-009), for viewport preview.
+    @discardableResult
     static func sliceToGCode(
         objects: [(mesh: LoadedMesh, transform: simd_float4x4)],
         configEntries: [(key: String, value: String)],
         outputPath: String
-    ) throws {
+    ) throws -> [ToolpathSegment] {
         let pendingObjects = objects.map {
             PendingSceneObject(vertices: $0.mesh.vertices, indices: $0.mesh.indices, matrix16: flatten($0.transform))
         }
         var errorMessage: String?
+        var toolpath: [ToolpathSegment] = []
         let result = withNSA1SceneObjects(pendingObjects) { objPtr, objCount in
             withNSA1ConfigEntries(configEntries) { cfgPtr, cfgCount in
                 outputPath.withCString { outPtr -> Int32 in
                     var errPtr: UnsafeMutablePointer<CChar>?
-                    let r = nsa1_slice_to_gcode(objPtr, objCount, cfgPtr, cfgCount, outPtr, &errPtr)
+                    var toolpathPtr: UnsafeMutablePointer<NSA1Toolpath>?
+                    let r = nsa1_slice_to_gcode(objPtr, objCount, cfgPtr, cfgCount, outPtr, &toolpathPtr, &errPtr)
                     if let errPtr {
                         errorMessage = String(cString: errPtr)
                         nsa1_free_string(errPtr)
+                    }
+                    if let toolpathPtr {
+                        defer { nsa1_free_toolpath(toolpathPtr) }
+                        let segs = UnsafeBufferPointer(start: toolpathPtr.pointee.segments, count: toolpathPtr.pointee.segment_count)
+                        toolpath = segs.map {
+                            ToolpathSegment(
+                                start: SIMD3($0.start_x, $0.start_y, $0.start_z),
+                                end: SIMD3($0.end_x, $0.end_y, $0.end_z),
+                                width: $0.width,
+                                height: $0.height,
+                                isTravel: $0.is_travel != 0
+                            )
+                        }
                     }
                     return r
                 }
@@ -183,5 +212,6 @@ enum SlicingEngine {
         guard result == 0 else {
             throw SlicingEngineError.sliceFailed(errorMessage ?? "unknown engine error")
         }
+        return toolpath
     }
 }

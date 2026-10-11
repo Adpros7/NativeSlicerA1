@@ -46,15 +46,17 @@ enum SlicingJob {
         return nil
     }
 
-    /// Slices `objects` with the resolved A1 config and writes real G-code
-    /// to `outputPath`.
+    /// Slices `objects` with the resolved A1 config, writes real G-code to
+    /// `outputPath`, and returns the real per-move toolpath (P1-009) for
+    /// viewport preview.
+    @discardableResult
     static func slice(
         objects: [(mesh: LoadedMesh, transform: simd_float4x4)],
         loader: BambuProfileLoader,
         selection: ProfileSelection = ProfileSelection(),
         outputPath: String
-    ) throws {
+    ) throws -> [ToolpathSegment] {
         let entries = try resolvedConfigEntries(loader: loader, selection: selection)
-        try SlicingEngine.sliceToGCode(objects: objects, configEntries: entries, outputPath: outputPath)
+        return try SlicingEngine.sliceToGCode(objects: objects, configEntries: entries, outputPath: outputPath)
     }
 }

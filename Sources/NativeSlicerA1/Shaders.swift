@@ -44,4 +44,30 @@ fragment float4 viewport_fragment(VertexOut in [[stage_in]],
     float3 lit = uniforms.color.rgb * (ambient + diffuse * 0.65);
     return float4(lit, uniforms.color.a);
 }
+
+struct ToolpathVertexIn {
+    float3 position [[attribute(0)]];
+    float3 color [[attribute(1)]];
+};
+
+struct ToolpathVertexOut {
+    float4 clipPosition [[position]];
+    float3 color;
+};
+
+struct ToolpathUniforms {
+    float4x4 modelViewProjection;
+};
+
+vertex ToolpathVertexOut toolpath_vertex(ToolpathVertexIn in [[stage_in]],
+                                          constant ToolpathUniforms &uniforms [[buffer(1)]]) {
+    ToolpathVertexOut out;
+    out.clipPosition = uniforms.modelViewProjection * float4(in.position, 1.0);
+    out.color = in.color;
+    return out;
+}
+
+fragment float4 toolpath_fragment(ToolpathVertexOut in [[stage_in]]) {
+    return float4(in.color, 1.0);
+}
 """

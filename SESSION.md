@@ -1,15 +1,17 @@
 # Session State
 
 ## Current phase
-Phase 1: Application Foundation (Phase 0 and Phase 9 docs complete; Phase 2
-partially complete). P1-001 through P1-008 are complete. Next unblocked:
-P1-009 G-code visualization.
+Phase 1: Application Foundation — complete (P1-001 through P1-009). Phase 0
+and Phase 9 docs complete; Phase 2 partially complete. Next unblocked:
+P2-004 (print upload) or P2-007 (validate printer-specific G-code) — both
+hardware-adjacent and not hardware-verifiable this session; alternatively
+Phase 3 (feature parity) work can start.
 
 ## Last completed task
-P1-008: Conventional slicing. Real G-code generation via libslic3r's own
-`Print::apply`/`validate`/`process`/`export_gcode` pipeline, driven by the
-real vendored A1 machine/process/filament profile closure. Committed and
-pushed as (see `git log`).
+P1-009: G-code visualization. Real per-move toolpath extraction from the
+engine's own `GCodeProcessorResult` (previously discarded by P1-008),
+rendered as a GPU line-list through a dedicated Metal pipeline, wired to a
+toolbar "Slice" button. Committed and pushed (see `git log`).
 
 ## Current task / progress
 No task in progress.
@@ -58,19 +60,32 @@ No task in progress.
   `"include"` key (custom start/end/layer-change G-code templates) isn't
   resolved by `BambuProfileLoader` — only `inherits` chains are — so
   slicing currently uses the engine's own default G-code templates, not
-  the A1-specific ones. Tracked, not blocking (real engine + real A1
-  config + real G-code output already verified).
+  the A1-specific ones.
+- **G-code visualization (P1-009)**: `Print::export_gcode`'s
+  `GCodeProcessorResult::moves` (real per-move toolpath data, already
+  computed internally, previously discarded) is now returned through
+  `nsa1_slice_to_gcode`'s optional `NSA1Toolpath**` out-param as flat
+  line segments (consecutive `Extrude`/`Travel` move positions; broken at
+  non-move events like retract/seam/tool-change). `MetalRenderer` gained a
+  second compiled pipeline (`toolpath_vertex`/`toolpath_fragment`) drawing
+  this as a GPU line-list (extrude orange, travel gray). `ProjectDocument
+  .slice()` runs the real pipeline via `Task.detached` off the
+  `@MainActor` (so the UI stays responsive) and is wired to a toolbar
+  "Slice" button in `ContentView`. **Known gap**: only the default A1/PLA
+  profile selection is used — no per-slice profile picker UI yet.
 - Printer networking (A1 discovery/MQTT): reimplemented natively in Swift
   from reverse-engineered protocol docs — Bambu's own implementation is
   closed-source (`bambu_networking` plugin, no public source). Not
   hardware-verified against a real printer (see TODO.md P2-002/003/006).
 
 ## Uncommitted changes
-None after this session's commit (P1-008).
+None after this session's commits (P1-008, P1-009).
 
 ## Known blockers
 None. Open follow-ups (not blocking, tracked in TODO.md):
-- P1-008's `"include"` custom G-code template gap (see above).
+- P1-008's `"include"` custom G-code template gap.
+- P1-009's lack of a profile-selection UI (defaults to A1 0.4 nozzle /
+  0.20mm Standard / Generic PLA).
 - P0-011 feature-parity matrix needs a file:line citation pass (currently
   a 274-row draft without per-row sourcing).
 - THIRD_PARTY_LICENSES.md has a few "📋 public record, not re-verified"
@@ -83,18 +98,21 @@ None. Open follow-ups (not blocking, tracked in TODO.md):
   code is protocol/documentation-level verified only.
 
 ## Next recommended action
-P1-009: G-code visualization (toolpath preview in the Metal viewport).
-`Print::export_gcode`'s `GCodeProcessorResult*` out-param (already wired
-up but discarded in `nsa1_slice_to_gcode`) carries per-move layer/extrusion
-data the engine's own G-code preview UI uses — investigate exposing that
-through the bridge rather than re-parsing the `.gcode` text file.
+Phase 1 (Application Foundation) is complete. Next unblocked work:
+- P2-004/P2-007/P2-008: print upload, printer-specific G-code validation,
+  physical A1 validation — all need real hardware, not available this
+  session; can implement the upload protocol (P2-004, likely FTP-over-TLS
+  per RESEARCH-P0-007.md) without hardware, tested against a local server
+  the same way P2-003's MQTT client was tested against a local broker.
+- Or start Phase 3 (feature parity): P3-003 (advanced slicing settings)
+  is a natural next step that also closes P1-009's profile-picker gap.
 
 ## Relevant test/build commands
 - `Scripts/build-libslic3r.sh` — one-time/idempotent engine build.
 - `swift build` / `swift test` / `swift run NativeSlicerA1`.
 - `swift test --filter ProjectDocumentTests` — real 3MF geometry/transform
   round-trip plus failed-load preservation.
-- `swift test --filter MetalRendererTests` — real mesh upload and draw
-  encoding through the compiled GPU pipeline.
+- `swift test --filter MetalRendererTests` — real mesh upload/draw and
+  real toolpath upload/draw through the compiled GPU pipelines.
 - `swift test --filter SlicingJobTests` — real end-to-end G-code
   generation through the A1 profile closure.

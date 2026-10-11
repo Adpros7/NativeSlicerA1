@@ -19,6 +19,11 @@ struct RenderObject {
     let selected: Bool
 }
 
+/// Must mirror `ToolpathUniforms` in `Shaders.swift`'s MSL source.
+private struct ToolpathUniforms {
+    var modelViewProjection: simd_float4x4
+}
+
 /// Must mirror `Uniforms` in `Shaders.swift`'s MSL source byte-for-byte:
 /// two column-major 4x4 matrices then a float4, all 16-byte aligned on
 /// both sides, so no manual padding is needed.
@@ -36,7 +41,10 @@ final class MetalRenderer: NSObject, MTKViewDelegate {
     private let commandQueue: MTLCommandQueue
     private let pipelineState: MTLRenderPipelineState
     private let depthState: MTLDepthStencilState
+    private let toolpathPipelineState: MTLRenderPipelineState
     private var meshBuffers: [UUID: GPUMesh] = [:]
+    private var toolpathBuffer: MTLBuffer?
+    private var toolpathVertexCount = 0
 
     var renderObjects: [RenderObject] = []
     var camera = Camera()
@@ -47,7 +55,9 @@ final class MetalRenderer: NSObject, MTKViewDelegate {
         guard
             let library = try? device.makeLibrary(source: viewportShaderSource, options: nil),
             let vertexFunction = library.makeFunction(name: "viewport_vertex"),
-            let fragmentFunction = library.makeFunction(name: "viewport_fragment")
+            let fragmentFunction = library.makeFunction(name: "viewport_fragment"),
+            let toolpathVertexFunction = library.makeFunction(name: "toolpath_vertex"),
+            let toolpathFragmentFunction = library.makeFunction(name: "toolpath_fragment")
         else { return nil }
 
         let vertexDescriptor = MTLVertexDescriptor()
@@ -63,20 +73,63 @@ final class MetalRenderer: NSObject, MTKViewDelegate {
         pipelineDescriptor.colorAttachments[0].pixelFormat = .bgra8Unorm
         pipelineDescriptor.depthAttachmentPixelFormat = .depth32Float
 
+        // Toolpath line vertices interleave position (float3) + color
+        // (float3) — see `ToolpathVertex` below and `toolpath_vertex` in
+        // Shaders.swift.
+        let toolpathVertexDescriptor = MTLVertexDescriptor()
+        toolpathVertexDescriptor.attributes[0].format = .float3
+        toolpathVertexDescriptor.attributes[0].offset = 0
+        toolpathVertexDescriptor.attributes[0].bufferIndex = 0
+        toolpathVertexDescriptor.attributes[1].format = .float3
+        toolpathVertexDescriptor.attributes[1].offset = MemoryLayout<Float>.stride * 3
+        toolpathVertexDescriptor.attributes[1].bufferIndex = 0
+        toolpathVertexDescriptor.layouts[0].stride = MemoryLayout<Float>.stride * 6
+
+        let toolpathPipelineDescriptor = MTLRenderPipelineDescriptor()
+        toolpathPipelineDescriptor.vertexFunction = toolpathVertexFunction
+        toolpathPipelineDescriptor.fragmentFunction = toolpathFragmentFunction
+        toolpathPipelineDescriptor.vertexDescriptor = toolpathVertexDescriptor
+        toolpathPipelineDescriptor.colorAttachments[0].pixelFormat = .bgra8Unorm
+        toolpathPipelineDescriptor.depthAttachmentPixelFormat = .depth32Float
+
         let depthDescriptor = MTLDepthStencilDescriptor()
         depthDescriptor.depthCompareFunction = .less
         depthDescriptor.isDepthWriteEnabled = true
 
         guard
             let pipelineState = try? device.makeRenderPipelineState(descriptor: pipelineDescriptor),
+            let toolpathPipelineState = try? device.makeRenderPipelineState(descriptor: toolpathPipelineDescriptor),
             let depthState = device.makeDepthStencilState(descriptor: depthDescriptor)
         else { return nil }
 
         self.device = device
         commandQueue = queue
         self.pipelineState = pipelineState
+        self.toolpathPipelineState = toolpathPipelineState
         self.depthState = depthState
     }
+
+    /// Uploads a real-geometry toolpath (P1-009, `SlicingJob.slice`'s
+    /// return value) as a GPU line-list buffer: two colored vertices per
+    /// segment, extrude moves in orange, travel moves in translucent gray.
+    /// Replaces any previously uploaded toolpath.
+    func setToolpath(_ segments: [ToolpathSegment]) {
+        guard !segments.isEmpty else {
+            toolpathBuffer = nil
+            toolpathVertexCount = 0
+            return
+        }
+        var floats: [Float] = []
+        floats.reserveCapacity(segments.count * 12)
+        for seg in segments {
+            let color: SIMD3<Float> = seg.isTravel ? SIMD3(0.6, 0.6, 0.6) : SIMD3(0.95, 0.55, 0.15)
+            floats.append(contentsOf: [seg.start.x, seg.start.y, seg.start.z, color.x, color.y, color.z])
+            floats.append(contentsOf: [seg.end.x, seg.end.y, seg.end.z, color.x, color.y, color.z])
+        }
+        toolpathBuffer = device.makeBuffer(bytes: floats, length: floats.count * MemoryLayout<Float>.stride, options: .storageModeShared)
+        toolpathVertexCount = segments.count * 2
+    }
+
 
     /// Uploads a GPU buffer pair for `mesh` if `meshID` isn't cached yet.
     func ensureBuffer(for meshID: UUID, mesh: LoadedMesh) {
@@ -121,6 +174,14 @@ final class MetalRenderer: NSObject, MTKViewDelegate {
             encoder.setVertexBytes(&uniforms, length: MemoryLayout<Uniforms>.stride, index: 1)
             encoder.setFragmentBytes(&uniforms, length: MemoryLayout<Uniforms>.stride, index: 1)
             encoder.drawIndexedPrimitives(type: .triangle, indexCount: gpuMesh.indexCount, indexType: .uint32, indexBuffer: gpuMesh.indexBuffer, indexBufferOffset: 0)
+        }
+
+        if let toolpathBuffer, toolpathVertexCount > 0 {
+            var toolpathUniforms = ToolpathUniforms(modelViewProjection: viewProjection)
+            encoder.setRenderPipelineState(toolpathPipelineState)
+            encoder.setVertexBuffer(toolpathBuffer, offset: 0, index: 0)
+            encoder.setVertexBytes(&toolpathUniforms, length: MemoryLayout<ToolpathUniforms>.stride, index: 1)
+            encoder.drawPrimitives(type: .line, vertexStart: 0, vertexCount: toolpathVertexCount)
         }
 
         encoder.endEncoding()
@@ -187,5 +248,6 @@ struct MetalViewport: NSViewRepresentable {
         renderer.renderObjects = document.objects.map {
             RenderObject(id: $0.id, meshID: $0.sourceMeshID, transform: $0.transform.matrix, selected: $0.id == document.selection)
         }
+        renderer.setToolpath(document.toolpath)
     }
 }

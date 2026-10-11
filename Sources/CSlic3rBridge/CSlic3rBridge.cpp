@@ -164,8 +164,12 @@ extern "C" int nsa1_slice_to_gcode(
     const NSA1SceneObject *objects, size_t object_count,
     const NSA1ConfigEntry *config_entries, size_t config_entry_count,
     const char *out_gcode_path,
+    NSA1Toolpath **out_toolpath,
     char **out_error) {
     *out_error = nullptr;
+    if (out_toolpath != nullptr) {
+        *out_toolpath = nullptr;
+    }
     try {
         if (object_count == 0) {
             *out_error = copy_c_string("no objects to slice");
@@ -225,12 +229,61 @@ extern "C" int nsa1_slice_to_gcode(
         print.process();
         Slic3r::GCodeProcessorResult result;
         print.export_gcode(out_gcode_path, &result);
+
+        if (out_toolpath != nullptr) {
+            // `result.moves` is the engine's own per-move toolpath data
+            // (P1-009) — the same data BambuStudio's own G-code preview
+            // consumes. Each `Extrude`/`Travel` move's `position` is that
+            // move's *end* point; the segment's start is the previous
+            // move's end point (consecutive-vertex polyline, matching
+            // upstream's own preview generator convention).
+            std::vector<NSA1ToolpathSegment> segments;
+            segments.reserve(result.moves.size());
+            bool have_prev = false;
+            Slic3r::Vec3f prev{0, 0, 0};
+            for (const auto &move : result.moves) {
+                const bool is_extrude = move.type == Slic3r::EMoveType::Extrude;
+                const bool is_travel = move.type == Slic3r::EMoveType::Travel;
+                if (!is_extrude && !is_travel) {
+                    have_prev = false; // break the polyline on non-move events (retract/seam/tool change/…)
+                    continue;
+                }
+                if (have_prev) {
+                    NSA1ToolpathSegment seg{};
+                    seg.start_x = prev.x();
+                    seg.start_y = prev.y();
+                    seg.start_z = prev.z();
+                    seg.end_x = move.position.x();
+                    seg.end_y = move.position.y();
+                    seg.end_z = move.position.z();
+                    seg.width = move.width;
+                    seg.height = move.height;
+                    seg.is_travel = is_travel ? 1 : 0;
+                    segments.push_back(seg);
+                }
+                prev = move.position;
+                have_prev = true;
+            }
+            auto *out = new NSA1ToolpathSegment[segments.size()];
+            std::copy(segments.begin(), segments.end(), out);
+            auto *toolpath = new NSA1Toolpath();
+            toolpath->segments = out;
+            toolpath->segment_count = segments.size();
+            *out_toolpath = toolpath;
+        }
         return 0;
     } catch (const std::exception &e) {
         *out_error = copy_c_string(e.what());
         return -1;
     }
 }
+
+extern "C" void nsa1_free_toolpath(NSA1Toolpath *toolpath) {
+    if (!toolpath) return;
+    delete[] toolpath->segments;
+    delete toolpath;
+}
+
 
 extern "C" void nsa1_free_string(char *s) {
     delete[] s;
