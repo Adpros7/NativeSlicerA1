@@ -12,6 +12,8 @@ License version 3 (AGPLv3). NativeSlicerA1 is also AGPLv3 (`LICENSE`).
 | `retraction/retraction_tower.stl` | `resources/calib/retraction/retraction_tower.stl` |
 | `volumetric_speed/SpeedTestStructure.step` | `resources/calib/volumetric_speed/SpeedTestStructure.step` |
 
+| `pressure_advance/pressure_advance_test.stl` | `resources/calib/pressure_advance/pressure_advance_test.stl` |
+
 No OrcaSlicer pressure-advance asset is bundled here. OrcaSlicer's README
 identifies separate GPLv3 provenance for its pressure-advance pattern;
 that notice must be reviewed before any such asset is copied.

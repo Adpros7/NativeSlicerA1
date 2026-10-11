@@ -7,8 +7,8 @@ enum CalibrationResources {
         "temperature_tower": ("Calibration/temperature_tower", "stl"),
         "retraction_tower": ("Calibration/retraction", "stl"),
         "SpeedTestStructure": ("Calibration/volumetric_speed", "step"),
+        "pressure_advance_test": ("Calibration/pressure_advance", "stl"),
     ]
-
     static func url(named name: String) -> URL? {
         guard let location = locations[name],
               let resourceURL = Bundle.module.resourceURL

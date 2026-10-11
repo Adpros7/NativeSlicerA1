@@ -135,6 +135,43 @@ final class CalibrationJobTests: XCTestCase {
         XCTAssertEqual(generation.blocks.map(\.value), [0.8, 0.85, 0.9, 0.95, 1, 1.05, 1.1, 1.15, 1.2])
         XCTAssertTrue(try String(contentsOf: output).contains("Bambu Lab A1"))
     }
+
+    func testPressureAdvanceCalibrationSlicesBundledPatternThroughRealEngine() throws {
+        let loader = try BambuProfileLoader()
+        let request = CalibrationRequest(
+            workflow: .pressureAdvance,
+            start: 0,
+            end: 0.004,
+            step: 0.002,
+            selection: .init()
+        )
+        try CalibrationJob.validate(request, loader: loader, capabilities: .all)
+        let output = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString)
+            .appendingPathExtension("gcode")
+        defer {
+            if FileManager.default.fileExists(atPath: output.path) {
+                try? FileManager.default.removeItem(at: output)
+            }
+        }
+
+        let generation = try SlicingEngine.generateCalibrationGCode(
+            request: request,
+            resourceURL: try XCTUnwrap(CalibrationResources.url(named: "pressure_advance_test")),
+            configEntries: try SlicingJob.resolvedConfigEntries(loader: loader),
+            outputPath: output.path
+        )
+
+        XCTAssertFalse(generation.toolpath.isEmpty)
+        XCTAssertEqual(generation.blocks.map(\.value), [0, 0.002, 0.004])
+        let gcode = try String(contentsOf: output)
+        let markers = ["M900 K0", "M900 K0.002", "M900 K0.004"]
+        var searchStart = gcode.startIndex
+        for marker in markers {
+            let range = try XCTUnwrap(gcode.range(of: marker, range: searchStart..<gcode.endIndex))
+            searchStart = range.upperBound
+        }
+    }
     /// Verify ProjectDocument creation + importModel works in this test class.
     func testProjectDocumentImportInCalibrationContext() {
         let document = ProjectDocument()

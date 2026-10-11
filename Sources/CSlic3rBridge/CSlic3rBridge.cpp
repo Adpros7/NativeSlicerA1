@@ -12,6 +12,7 @@
 #include "libslic3r/TriangleMesh.hpp"
 #include "libslic3r/Model.hpp"
 #include "libslic3r/Format/3mf.hpp"
+#include "libslic3r/Calib.hpp"
 #include "libslic3r/Print.hpp"
 #include "libslic3r/PrintConfig.hpp"
 #include "libslic3r/miniz_extension.hpp"
@@ -383,7 +384,8 @@ extern "C" int nsa1_generate_calibration_gcode(
     };
     if (!request || !out_gcode_path || !out_result || !out_error)
         return fail("invalid calibration request");
-    if (request->workflow != NSA1_CALIBRATION_FLOW_RATE)
+    if (request->workflow != NSA1_CALIBRATION_FLOW_RATE &&
+        request->workflow != NSA1_CALIBRATION_PRESSURE_ADVANCE)
         return fail("unsupported calibration workflow");
     if (!request->resource_path)
         return fail("missing calibration resource path");
@@ -391,21 +393,40 @@ extern "C" int nsa1_generate_calibration_gcode(
     if (!std::filesystem::is_regular_file(request->resource_path, error))
         return fail("missing calibration resource");
 
+    const bool pressure_advance = request->workflow == NSA1_CALIBRATION_PRESSURE_ADVANCE;
+    const size_t block_count = request->step > 0 && std::isfinite(request->step)
+        ? static_cast<size_t>(std::floor(std::abs(request->end - request->start) / request->step + 1e-9)) + 1
+        : 0;
+    if (pressure_advance) {
+        if (!std::isfinite(request->start) || !std::isfinite(request->end) ||
+            !std::isfinite(request->step) || request->step <= 0 ||
+            block_count == 0 || block_count > 200)
+            return fail("invalid pressure-advance calibration range");
+    }
+
     // Pass 1 is the fixed upstream resource: flow ratios 0.80 through 1.20.
     constexpr double first_ratio = 0.8;
     constexpr double last_ratio = 1.2;
     constexpr double ratio_step = 0.05;
-    if (request->step <= 0 || request->start < first_ratio - 1e-6 ||
+    if (!pressure_advance && (request->step <= 0 || request->start < first_ratio - 1e-6 ||
         request->end > last_ratio + 1e-6 ||
         std::abs(request->start - first_ratio) > 1e-6 ||
         std::abs(request->end - last_ratio) > 1e-6 ||
-        std::abs(request->step - ratio_step) > 1e-6)
+        std::abs(request->step - ratio_step) > 1e-6))
         return fail("unsupported flow-rate calibration range");
 
     try {
         Slic3r::Model model;
-        if (!load_3mf_model(request->resource_path, model))
+        if (pressure_advance) {
+            Slic3r::TriangleMesh mesh;
+            if (!mesh.ReadSTLFile(request->resource_path, /*repair=*/false))
+                return fail("failed to load calibration resource");
+            Slic3r::ModelObject *object = model.add_object();
+            object->add_volume(std::move(mesh), Slic3r::ModelVolumeType::MODEL_PART, /*modify_to_center_geometry=*/false);
+            object->add_instance();
+        } else if (!load_3mf_model(request->resource_path, model)) {
             return fail("failed to load calibration resource");
+        }
         Slic3r::DynamicPrintConfig config =
             build_full_config(request->config_entries, request->config_entry_count);
 
@@ -425,12 +446,24 @@ extern "C" int nsa1_generate_calibration_gcode(
             object->config.set_key_value("bottom_shell_layers", new Slic3r::ConfigOptionInt(1));
             object->config.set_key_value("top_shell_layers", new Slic3r::ConfigOptionInt(5));
             object->config.set_key_value("detect_thin_wall", new Slic3r::ConfigOptionBool(true));
-            std::string name = object->name;
-            if (name.rfind("flowrate_", 0) != 0) return fail("invalid flow-rate calibration resource");
-            name.erase(0, 9);
-            if (!name.empty() && name[0] == 'm') name[0] = '-';
-            const double ratio = 1.0 + std::stod(name) / 100.0;
-            object->config.set_key_value("print_flow_ratio", new Slic3r::ConfigOptionFloat(ratio));
+            if (!pressure_advance) {
+                std::string name = object->name;
+                if (name.rfind("flowrate_", 0) != 0) return fail("invalid flow-rate calibration resource");
+                name.erase(0, 9);
+                if (!name.empty() && name[0] == 'm') name[0] = '-';
+                const double ratio = 1.0 + std::stod(name) / 100.0;
+                object->config.set_key_value("print_flow_ratio", new Slic3r::ConfigOptionFloat(ratio));
+            }
+        }
+        if (pressure_advance) {
+            Slic3r::Calib_Params params;
+            params.start = request->start;
+            params.end = request->end;
+            params.step = request->step;
+            params.mode = Slic3r::CalibMode::Calib_PA_Pattern;
+            model.calib_pa_pattern = std::make_unique<Slic3r::CalibPressureAdvancePattern>(
+                params, config, true, model, Slic3r::Vec3d::Zero());
+            model.calib_pa_pattern->generate_custom_gcodes(config, true, model, Slic3r::Vec3d::Zero());
         }
         config.set_key_value("layer_height", new Slic3r::ConfigOptionFloat(layer_height));
         config.set_key_value("initial_layer_print_height", new Slic3r::ConfigOptionFloat(first_layer_height));
@@ -467,12 +500,19 @@ extern "C" int nsa1_generate_calibration_gcode(
         auto toolpath = std::make_unique<NSA1Toolpath>(
             NSA1Toolpath{segment_buffer.get(), segments.size()}
         );
-        auto blocks = std::make_unique<NSA1CalibrationBlock[]>(9);
-        for (size_t i = 0; i < 9; ++i) {
-            blocks[i] = NSA1CalibrationBlock{i, (80.0 + 5.0 * i) / 100.0, 0, 0};
+        const size_t result_block_count = pressure_advance ? block_count : 9;
+        auto blocks = std::make_unique<NSA1CalibrationBlock[]>(result_block_count);
+        for (size_t i = 0; i < result_block_count; ++i) {
+            blocks[i] = NSA1CalibrationBlock{
+                i,
+                pressure_advance ? request->start + static_cast<double>(i) * request->step
+                                 : (80.0 + 5.0 * i) / 100.0,
+                0,
+                0
+            };
         }
         auto result = std::make_unique<NSA1CalibrationResult>(
-            NSA1CalibrationResult{toolpath.get(), blocks.get(), 9}
+            NSA1CalibrationResult{toolpath.get(), blocks.get(), result_block_count}
         );
         segment_buffer.release();
         toolpath.release();
