@@ -324,6 +324,99 @@ enum SlicingEngine {
         return toolpath
     }
 
+    /// Slice output with estimated print statistics (P1-011).
+    struct EstimatedPrintStatistics: Sendable {
+        let normalTime: Double
+        let normalPrepareTime: Double
+        let stealthTime: Double
+        let stealthPrepareTime: Double
+        let totalFilamentLoadTime: Double
+        let totalFilamentUnloadTime: Double
+        let totalToolChangeTime: Double
+        let totalTravelDistance: Double
+        let totalFilamentChanges: Int
+        let totalFlushFilamentChanges: Int
+        let totalExtruderChanges: Int
+        let totalTravelMoves: Int
+        let totalSeamGapDistance: Double
+        let totalSeamScarfDistance: Double
+        let extruderVolumesMM3: [Double]
+        let roleLengthsMM: [Double]
+        let roleVolumesMM3: [Double]
+    }
+
+    @discardableResult
+    static func sliceToGCodeWithStatistics(
+        objects: [(mesh: LoadedMesh, transform: simd_float4x4)],
+        configEntries: [(key: String, value: String)],
+        outputPath: String
+    ) throws -> (toolpath: [ToolpathSegment], statistics: EstimatedPrintStatistics) {
+        let pendingObjects = objects.map {
+            PendingSceneObject(vertices: $0.mesh.vertices, indices: $0.mesh.indices, matrix16: flatten($0.transform))
+        }
+        var errorMessage: String?
+        var toolpath: [ToolpathSegment] = []
+        var stats: EstimatedPrintStatistics?
+        let result = withNSA1SceneObjects(pendingObjects) { objPtr, objCount in
+            withNSA1ConfigEntries(configEntries) { cfgPtr, cfgCount in
+                outputPath.withCString { outPtr -> Int32 in
+                    var errPtr: UnsafeMutablePointer<CChar>?
+                    var toolpathPtr: UnsafeMutablePointer<NSA1Toolpath>?
+                    var statsPtr: UnsafeMutablePointer<NSA1EstimatedStatistics>?
+                    let r = nsa1_slice_to_gcode_with_statistics(
+                        objPtr, objCount, cfgPtr, cfgCount, outPtr,
+                        &toolpathPtr, &statsPtr, &errPtr
+                    )
+                    if let errPtr {
+                        errorMessage = String(cString: errPtr)
+                        nsa1_free_string(errPtr)
+                    }
+                    if let toolpathPtr {
+                        defer { nsa1_free_toolpath(toolpathPtr) }
+                        let segs = UnsafeBufferPointer(start: toolpathPtr.pointee.segments, count: toolpathPtr.pointee.segment_count)
+                        toolpath = segs.map {
+                            ToolpathSegment(
+                                start: SIMD3($0.start_x, $0.start_y, $0.start_z),
+                                end: SIMD3($0.end_x, $0.end_y, $0.end_z),
+                                width: $0.width,
+                                height: $0.height,
+                                isTravel: $0.is_travel != 0
+                            )
+                        }
+                    }
+                    if let statsPtr {
+                        defer { nsa1_free_estimated_statistics(statsPtr) }
+                        let s = statsPtr.pointee
+                        stats = EstimatedPrintStatistics(
+                            normalTime: s.normal_time,
+                            normalPrepareTime: s.normal_prepare_time,
+                            stealthTime: s.stealth_time,
+                            stealthPrepareTime: s.stealth_prepare_time,
+                            totalFilamentLoadTime: s.total_filament_load_time,
+                            totalFilamentUnloadTime: s.total_filament_unload_time,
+                            totalToolChangeTime: s.total_tool_change_time,
+                            totalTravelDistance: s.total_travel_distance,
+                            totalFilamentChanges: Int(s.total_filament_changes),
+                            totalFlushFilamentChanges: Int(s.total_flush_filament_changes),
+                            totalExtruderChanges: Int(s.total_extruder_changes),
+                            totalTravelMoves: Int(s.total_travel_moves),
+                            totalSeamGapDistance: s.total_seam_gap_distance,
+                            totalSeamScarfDistance: s.total_seam_scarf_distance,
+                            extruderVolumesMM3: UnsafeBufferPointer(start: s.extruder_volumes_mm3, count: Int(s.extruder_count)).map { $0 },
+                            roleLengthsMM: UnsafeBufferPointer(start: s.role_lengths_mm, count: Int(s.role_count)).map { $0 },
+                            roleVolumesMM3: UnsafeBufferPointer(start: s.role_volumes_mm3, count: Int(s.role_count)).map { $0 }
+                        )
+                    }
+                    return r
+                }
+            }
+        }
+        guard result == 0 else {
+            throw SlicingEngineError.sliceFailed(errorMessage ?? "unknown engine error")
+        }
+        return (toolpath, stats!)
+    }
+
     /// Calls the dedicated calibration C ABI. Generation remains entirely
     /// local: no printer connection, upload, or start-print operation is
     /// available through this API.

@@ -134,6 +134,31 @@ typedef struct {
     size_t segment_count;
 } NSA1Toolpath;
 
+/// Estimated print statistics from the engine's GCodeProcessor (P1-011).
+typedef struct {
+    double normal_time;            // total print time (seconds)
+    double normal_prepare_time;    // pre-print setup time (seconds)
+    double stealth_time;           // silent mode print time (seconds)
+    double stealth_prepare_time;   // silent mode setup time (seconds)
+    double total_filament_load_time;
+    double total_filament_unload_time;
+    double total_tool_change_time;
+    double total_travel_distance;
+    int total_filament_changes;
+    int total_flush_filament_changes;
+    int total_extruder_changes;
+    int total_travel_moves;
+    double total_seam_gap_distance;
+    double total_seam_scarf_distance;
+    // Per-extruder filament volume (mm3) — extruder_id maps to index.
+    size_t extruder_count;
+    const double *extruder_volumes_mm3;
+    // Per-role filament: (length_mm, volume_mm3) pairs.
+    size_t role_count;
+    const double *role_lengths_mm;
+    const double *role_volumes_mm3;
+} NSA1EstimatedStatistics;
+
 /// Slices `object_count` placed objects (mesh + column-major placement
 /// matrix, same convention as `NSA1SceneObject`) with the resolved A1
 /// printer/process/filament config and writes real G-code to
@@ -153,6 +178,24 @@ int nsa1_slice_to_gcode(
     const char *out_gcode_path,
     NSA1Toolpath **out_toolpath,
     char **out_error);
+
+/// Same as `nsa1_slice_to_gcode` but also returns estimated print
+/// statistics via `out_statistics` (P1-011). Returns 0 on success, -1 on
+/// failure. On failure, `*out_error` is set to a newly allocated
+/// human-readable message (free with `nsa1_free_string`); on success
+/// `*out_error` is set to NULL. On success, if `out_statistics` is
+/// non-NULL, it's set to a newly allocated `NSA1EstimatedStatistics`
+/// (free with `nsa1_free_estimated_statistics`). Set to NULL on failure
+/// or if `out_statistics` was itself NULL.
+int nsa1_slice_to_gcode_with_statistics(
+    const NSA1SceneObject *objects, size_t object_count,
+    const NSA1ConfigEntry *config_entries, size_t config_entry_count,
+    const char *out_gcode_path,
+    NSA1Toolpath **out_toolpath,
+    NSA1EstimatedStatistics **out_statistics,
+    char **out_error);
+
+void nsa1_free_estimated_statistics(NSA1EstimatedStatistics *stats);
 
 /// Numeric values map to `CalibrationWorkflow` in Swift. Kept as a fixed
 /// int32_t in the request so C callers do not depend on C++ enum layout.

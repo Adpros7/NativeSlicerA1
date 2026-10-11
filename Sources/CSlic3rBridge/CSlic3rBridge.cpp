@@ -469,10 +469,135 @@ extern "C" int nsa1_slice_to_gcode(
     }
 }
 
+extern "C" int nsa1_slice_to_gcode_with_statistics(
+    const NSA1SceneObject *objects, size_t object_count,
+    const NSA1ConfigEntry *config_entries, size_t config_entry_count,
+    const char *out_gcode_path,
+    NSA1Toolpath **out_toolpath,
+    NSA1EstimatedStatistics **out_statistics,
+    char **out_error) {
+    *out_error = nullptr;
+    if (out_toolpath != nullptr) {
+        *out_toolpath = nullptr;
+    }
+    if (out_statistics != nullptr) {
+        *out_statistics = nullptr;
+    }
+    try {
+        if (object_count == 0) {
+            *out_error = copy_c_string("no objects to slice");
+            return -1;
+        }
+        Slic3r::Model model = build_model_from_objects(objects, object_count);
+        Slic3r::DynamicPrintConfig config = build_full_config(config_entries, config_entry_count);
+
+        Slic3r::Print print;
+        print.apply(model, config);
+        Slic3r::StringObjectException err = print.validate();
+        if (!err.string.empty()) {
+            *out_error = copy_c_string(err.string);
+            return -1;
+        }
+        print.process();
+        Slic3r::GCodeProcessorResult result;
+        print.export_gcode(out_gcode_path, &result);
+
+        if (out_toolpath != nullptr) {
+            std::vector<NSA1ToolpathSegment> segments;
+            segments.reserve(result.moves.size());
+            bool have_prev = false;
+            Slic3r::Vec3f prev{0, 0, 0};
+            for (const auto &move : result.moves) {
+                const bool is_extrude = move.type == Slic3r::EMoveType::Extrude;
+                const bool is_travel = move.type == Slic3r::EMoveType::Travel;
+                if (!is_extrude && !is_travel) {
+                    have_prev = false;
+                    continue;
+                }
+                if (have_prev) {
+                    NSA1ToolpathSegment seg{};
+                    seg.start_x = prev.x();
+                    seg.start_y = prev.y();
+                    seg.start_z = prev.z();
+                    seg.end_x = move.position.x();
+                    seg.end_y = move.position.y();
+                    seg.end_z = move.position.z();
+                    seg.width = move.width;
+                    seg.height = move.height;
+                    seg.is_travel = is_travel ? 1 : 0;
+                    segments.push_back(seg);
+                }
+                prev = move.position;
+                have_prev = true;
+            }
+            auto *out = new NSA1ToolpathSegment[segments.size()];
+            std::copy(segments.begin(), segments.end(), out);
+            // P1-011: surface the engine's own estimated print statistics.
+            if (out_statistics != nullptr) {
+                const auto &stats = result.print_statistics;
+                auto *out = new NSA1EstimatedStatistics();
+                out->normal_time = (double)stats.modes[0].time;
+                out->normal_prepare_time = (double)stats.modes[0].prepare_time;
+                out->stealth_time = (double)stats.modes[1].time;
+                out->stealth_prepare_time = (double)stats.modes[1].prepare_time;
+                out->total_filament_load_time = 0.0;
+                out->total_filament_unload_time = 0.0;
+                out->total_tool_change_time = 0.0;
+                out->total_travel_distance = 0.0;
+                out->total_filament_changes = (int)stats.total_filament_changes;
+                out->total_flush_filament_changes = (int)stats.total_flush_filament_changes;
+                out->total_extruder_changes = 0;
+                out->total_travel_moves = 0;
+                out->total_seam_gap_distance = 0.0;
+                out->total_seam_scarf_distance = 0.0;
+                out->extruder_count = stats.total_volumes_per_extruder.size();
+                if (!out->extruder_count) {
+                    out->extruder_volumes_mm3 = nullptr;
+                } else {
+                    auto *ev = new double[out->extruder_count];
+                    size_t i = 0;
+                    for (const auto &kv : stats.total_volumes_per_extruder) {
+                        ev[i++] = kv.second;
+                    }
+                    out->extruder_volumes_mm3 = ev;
+                }
+                out->role_count = stats.used_filaments_per_role.size();
+                if (!out->role_count) {
+                    out->role_lengths_mm = nullptr;
+                    out->role_volumes_mm3 = nullptr;
+                } else {
+                    auto *rl = new double[out->role_count];
+                    auto *rv = new double[out->role_count];
+                    size_t i = 0;
+                    for (const auto &kv : stats.used_filaments_per_role) {
+                        rl[i] = kv.second.first;
+                        rv[i] = kv.second.second;
+                        i++;
+                    }
+                    out->role_lengths_mm = rl;
+                    out->role_volumes_mm3 = rv;
+                }
+                *out_statistics = out;
+            }
+        }
+    } catch (const std::exception &e) {
+        *out_error = copy_c_string(e.what());
+        return -1;
+    }
+}
+
 extern "C" void nsa1_free_toolpath(NSA1Toolpath *toolpath) {
     if (!toolpath) return;
     delete[] toolpath->segments;
     delete toolpath;
+}
+
+extern "C" void nsa1_free_estimated_statistics(NSA1EstimatedStatistics *stats) {
+    if (!stats) return;
+    if (stats->extruder_volumes_mm3) delete[] stats->extruder_volumes_mm3;
+    if (stats->role_lengths_mm) delete[] stats->role_lengths_mm;
+    if (stats->role_volumes_mm3) delete[] stats->role_volumes_mm3;
+    delete stats;
 }
 
 extern "C" int nsa1_generate_calibration_gcode(
