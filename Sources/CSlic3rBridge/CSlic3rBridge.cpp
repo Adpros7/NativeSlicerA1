@@ -17,7 +17,7 @@
 #include "libslic3r/PrintConfig.hpp"
 #include "libslic3r/miniz_extension.hpp"
 #include "libslic3r/Format/STEP.hpp"
-#include "libslic3r/Flow.hpp"
+#include "libslic3r/Orient.hpp"
 #include <cstring>
 #include <array>
 #include <filesystem>
@@ -186,6 +186,49 @@ extern "C" char *nsa1_get_3mf_unit(const char *path) {
     if (quoteEnd == std::string::npos) return strdup("millimeter");
     std::string unit = modelTag.substr(quoteStart + 1, quoteEnd - quoteStart - 1);
     return strdup(unit.c_str());
+}
+// Auto-orient: runs upstream orient() on a mesh and returns the optimal
+// transformation (rotation matrix + translation) that minimizes overhang.
+// Returns 0 on success, -1 on failure.
+extern "C" int nsa1_auto_orient(
+    const float *vertices, size_t vertex_count,
+    const uint32_t *indices, size_t index_count,
+    double *out_matrix16) {
+    try {
+        std::vector<Slic3r::Vec3f> verts(vertex_count);
+        for (size_t i = 0; i < vertex_count; ++i) {
+            verts[i] = Slic3r::Vec3f(vertices[i * 3 + 0], vertices[i * 3 + 1], vertices[i * 3 + 2]);
+        }
+        std::vector<Slic3r::Vec3i> faces(index_count / 3);
+        for (size_t i = 0; i < faces.size(); ++i) {
+            faces[i] = Slic3r::Vec3i(
+                static_cast<int>(indices[i * 3 + 0]),
+                static_cast<int>(indices[i * 3 + 1]),
+                static_cast<int>(indices[i * 3 + 2]));
+        }
+        Slic3r::TriangleMesh mesh(verts, faces);
+
+        Slic3r::orientation::OrientMesh orientMesh;
+        orientMesh.mesh = std::move(mesh);
+
+        // Run upstream orient with default params (minimize support area)
+        Slic3r::orientation::OrientMeshs items;
+        items.push_back(std::move(orientMesh));
+        Slic3r::orientation::OrientMeshs excludes;
+        Slic3r::orientation::OrientParams params;
+        Slic3r::orientation::orient(items, excludes, params);
+
+        if (items.empty()) return -1;
+
+        // Extract the transformation matrix (column-major 4x4)
+        const auto &mat = items.front().rotation_matrix;
+        for (int i = 0; i < 16; ++i) {
+            out_matrix16[i] = mat.data()[i];
+        }
+        return 0;
+    } catch (...) {
+        return -1;
+    }
 }
 
 extern "C" NSA1Mesh *nsa1_load_3mf_mesh(const char *path, int64_t object_index) {

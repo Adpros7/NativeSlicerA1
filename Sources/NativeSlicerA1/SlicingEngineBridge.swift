@@ -330,6 +330,31 @@ enum SlicingEngine {
         return String(cString: raw)
     }
 
+    /// Auto-orient: runs upstream orient() on a mesh, returns optimal rotation
+    /// matrix (column-major 4x4) that minimizes overhang area.
+    static func autoOrientMesh(_ mesh: LoadedMesh) throws -> simd_float4x4 {
+        var matrix = [Double](repeating: 0, count: 16)
+        let status = mesh.vertices.withUnsafeBufferPointer { vbuf in
+            mesh.indices.withUnsafeBufferPointer { ibuf in
+                nsa1_auto_orient(
+                    vbuf.baseAddress,
+                    Int(vbuf.count),
+                    ibuf.baseAddress,
+                    Int(ibuf.count),
+                    &matrix
+                )
+            }
+        }
+        guard status == 0 else {
+            throw SlicingEngineError.sliceFailed("auto-orient failed")
+        }
+        let m0 = SIMD4<Float>(Float(matrix[0]), Float(matrix[1]), Float(matrix[2]), Float(matrix[3]))
+        let m1 = SIMD4<Float>(Float(matrix[4]), Float(matrix[5]), Float(matrix[6]), Float(matrix[7]))
+        let m2 = SIMD4<Float>(Float(matrix[8]), Float(matrix[9]), Float(matrix[10]), Float(matrix[11]))
+        let m3 = SIMD4<Float>(Float(matrix[12]), Float(matrix[13]), Float(matrix[14]), Float(matrix[15]))
+        return simd_float4x4([m0, m1, m2, m3])
+    }
+
     /// Loads the first volume's mesh of the model object at `index` from a
     /// 3MF file, via the real engine's `load_3mf`.
     static func loadThreeMFMesh(atPath path: String, objectIndex index: Int) throws -> LoadedMesh {

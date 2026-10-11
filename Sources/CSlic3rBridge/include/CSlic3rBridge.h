@@ -62,8 +62,13 @@ NSA1Mesh *nsa1_load_step_mesh(const char *path);
 /// top-level model objects it contains, or -1 on failure.
 /// Extracts the `unit` attribute from a 3MF file's `<model>` element.
 /// Returns a newly allocated string (freed by `nsa1_free_string`);
-/// returns "millimeter" (the 3MF spec default) if not found.
 char *nsa1_get_3mf_unit(const char *path);
+
+/// Auto-orient: runs upstream orient() on a mesh, returns optimal rotation
+/// matrix (column-major 4x4) that minimizes overhang area. Returns 0 on
+/// success, -1 on failure.
+int nsa1_auto_orient(const float *vertices, size_t vertex_count,
+    const uint32_t *indices, size_t index_count, double *out_matrix16);
 
 /// Loads a 3MF file and returns the first volume's mesh of the model
 /// object at `object_index`, or NULL on failure/out-of-range index.
