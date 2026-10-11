@@ -610,4 +610,114 @@ enum SlicingEngine {
         }
         return generation
     }
+
+    /// Cuts a model object along a user-specified plane (P4-004).
+    /// Accepts mesh data as `(vertices, indices, matrix)` tuples.
+    /// Returns an array of sliced `LoadedMesh` objects (0, 1, or 2).
+    static func cutModel(
+        meshes: [(vertices: [Float], indices: [UInt32], matrix: simd_float4x4)],
+        planePoints: [(Float, Float, Float)],
+        cutMode: Int32
+    ) throws -> [LoadedMesh] {
+        guard planePoints.count == 4 else {
+            throw SlicingEngineError.sliceFailed("cut plane requires exactly 4 points")
+        }
+
+        var errorMessage: String?
+        var cutRequest = NSA1CutRequest(
+            plane_points: (
+                NSA1Vec3d(x: Double(planePoints[0].0), y: Double(planePoints[0].1), z: Double(planePoints[0].2)),
+                NSA1Vec3d(x: Double(planePoints[1].0), y: Double(planePoints[1].1), z: Double(planePoints[1].2)),
+                NSA1Vec3d(x: Double(planePoints[2].0), y: Double(planePoints[2].1), z: Double(planePoints[2].2)),
+                NSA1Vec3d(x: Double(planePoints[3].0), y: Double(planePoints[3].1), z: Double(planePoints[3].2))
+            ),
+            cut_mode: cutMode
+        )
+
+        // Build scene objects from the input meshes
+        var sceneObjects: [NSA1SceneObject] = []
+        for meshData in meshes {
+            let matrix = meshData.matrix
+            let mbuf = flatten(matrix)
+            sceneObjects.append(NSA1SceneObject(
+                vertices: UnsafePointer(meshData.vertices),
+                vertex_count: meshData.vertices.count,
+                indices: UnsafePointer(meshData.indices),
+                index_count: meshData.indices.count,
+                matrix16: mbuf
+            ))
+        }
+
+        var rawResultPtr: UnsafeMutablePointer<UnsafeMutablePointer<NSA1SceneObject>?>? = nil
+        var resultCount: Int = 0
+        var rawError: UnsafeMutablePointer<CChar>? = nil
+
+        var sceneObjPtrs: [NSA1SceneObject] = sceneObjects
+
+        let status = sceneObjPtrs.withUnsafeBufferPointer { ptrBuffer in
+            nsa1_cut_model(
+                ptrBuffer.baseAddress,
+                sceneObjects.count,
+                &cutRequest,
+                &rawResultPtr,
+                &resultCount,
+                &rawError
+            )
+        }
+
+        if let rawError {
+            errorMessage = String(cString: rawError)
+            nsa1_free_string(rawError)
+        }
+
+        guard status == 0 else {
+            throw SlicingEngineError.sliceFailed(errorMessage ?? "unknown cut error")
+        }
+
+        // Convert result to LoadedMesh array
+        if resultCount == 0 {
+            return []
+        }
+
+        let resultMeshes = UnsafeBufferPointer(
+            start: rawResultPtr?.pointee,
+            count: resultCount
+        )
+
+        var outMeshes: [LoadedMesh] = []
+        for i in 0..<resultCount {
+            let sceneObj = resultMeshes[i]
+            let vertexFloatCount = Int(sceneObj.vertex_count) * 3
+            let indexCount = Int(sceneObj.index_count)
+            let vertices = Array(UnsafeBufferPointer(
+                start: sceneObj.vertices,
+                count: vertexFloatCount
+            ))
+            let indices = Array(UnsafeBufferPointer(
+                start: sceneObj.indices,
+                count: indexCount
+            ))
+            outMeshes.append(LoadedMesh(
+                vertices: vertices,
+                indices: indices
+            ))
+        }
+
+        // Free the result array
+        if let rawResultPtr {
+            for i in 0..<resultCount {
+                var meshData = NSA1Mesh(
+                    vertices: rawResultPtr[i]!.pointee.vertices,
+                    vertex_count: rawResultPtr[i]!.pointee.vertex_count,
+                    indices: rawResultPtr[i]!.pointee.indices,
+                    index_count: rawResultPtr[i]!.pointee.index_count
+                )
+                nsa1_free_mesh(&meshData)
+            }
+            free(rawResultPtr)
+        }
+
+        return outMeshes
+    }
+
 }
