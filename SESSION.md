@@ -2,8 +2,8 @@
 
 ## Current phase
 Phase 1 (Application Foundation) and Phase 2's non-hardware items complete.
-Phase 3: P3-001 (source-cited feature-parity audit) complete this session;
-P3-002 (calibration workflows) is next. Phase 9 P9-007 (macOS
+Phase 3: P3-001 (feature-parity audit) and P3-002 (all 5 calibration
+workflows) complete this session. Phase 9 P9-007 (macOS
 deployment-target/zstd fix) is complete and pushed in `dc2fc9c`.
 
 ## Last completed task
@@ -35,16 +35,29 @@ are complete. The connectivity-specific source audit is retained in
 `RESEARCH-P0-011-CONNECTIVITY.md`.
 
 ## Current task / progress
-P3-002 flow-rate calibration is complete: a native `Calibration…` SwiftUI
-sheet labels the fixed pass-1 range and active printer/process/filament;
-Generate invokes the real local engine path, updates the existing Metal
+P3-002 complete: all 5 calibration workflows (flow-rate, pressure-advance,
+temperature, retraction, max-volumetric-speed) implemented end-to-end —
+native `Calibration…` SwiftUI sheet, real `nsa1_generate_calibration_gcode`
+bridge call per workflow, real `Print::apply/validate/process/export_gcode`
+slicing of the bundled upstream AGPLv3 asset, updates the existing Metal
 toolpath, retains blocks/output path in `lastCalibration`, preserves scene
-objects, and has no upload/send/print/MQTT path. XCTest verifies resource
-availability, validation/capability errors, bridge missing-resource errors,
-real engine output, and document non-destructive behavior; full suite:
-52 tests passing. Remaining P3-002 workflows: pressure advance,
-temperature tower, retraction, max volumetric speed, then unified result
-application/persistence and a final independent review.
+objects, no upload/send/print/MQTT path anywhere. Max-volumetric-speed was
+the hardest: `Slic3r::load_step()` has no link symbol in the vendored
+static lib (switched to the exported `Slic3r::Step` class), then two review
+rounds found and fixed real defects — pre-fix: unapplied line-width/layer-
+height config, wrong scale axis (flow-tower XY/Z scale instead of upstream's
+X-only bed-fit), and a missing safety-critical tower-height cut (full
+280mm STEP tower would print regardless of requested range); post-fix:
+`spiral_mode` set on the wrong config level (silently discarded by
+`PrintObjectConfig`), and a missing `filament_flow_ratio` factor in the
+mm3/s-to-mm/s conversion. Verified beyond "test passes": independently
+re-derived the expected per-layer feed rate from the real
+`Flow::mm3_per_mm()` formula and the engine's real ramp formula
+(`GCode.cpp:4754-4756`), parsed the actual G-code `G1 F` values at each
+`; Z_HEIGHT` boundary, and confirmed 8/8 exact integer-mm/min matches —
+captured permanently in
+`testMaxVolumetricSpeedCalibrationGCodeMatchesRequestedFlowRate`. Full
+suite: 57 tests passing.
 
 ## Important technical decisions
 - **License**: AGPLv3 (RESEARCH.md P0-004) — required to reuse `libslic3r`.
@@ -134,19 +147,13 @@ application/persistence and a final independent review.
   hardware-verified against a real printer (see TODO.md P2-002/003/006).
 
 ## Uncommitted changes
-None after the P3-002 Task 1 resource-milestone commit.
+None after the P3-002 max-volumetric-speed root-cause-fix commit.
 
 ## Known blockers
-P3-002 has two verified engineering gates, not reasons to reduce scope:
-- Only pressure-advance has a public reusable `libslic3r` generator
-  (`CalibPressureAdvancePattern`); upstream flow/temp/retraction/max-flow
-  workflows are GUI orchestration around real resource models and config
-  ranges. The plan isolates that adaptation in a narrow C++ bridge helper;
-  never post-edit exported G-code as the primary implementation.
-- A1 profile files establish printer/nozzle/filament compatibility but do
-  not declare calibration-command firmware capabilities. Pressure advance
-  must be capability-gated until actual firmware evidence is supplied;
-  workflow generation is not silently omitted.
+None for P3-002 — both verified engineering gates from prior sessions were
+resolved (STEP loading via the exported `Slic3r::Step` class; the PA
+capability-gating approach shipped as designed). Remaining project-wide
+blockers:
 - THIRD_PARTY_LICENSES.md still has a few "📋 public record, not
   re-verified" rows (Boost, CGAL, OCCT, Assimp, OpenCV, TBB, NLopt,
   FreeType, GMP, MPFR, curl, OpenSSL, expat, libjpeg-turbo, libpng,
@@ -160,13 +167,14 @@ P3-002 has two verified engineering gates, not reasons to reduce scope:
   extension point.
 
 ## Next recommended action
-- Continue P3-002 Task 2 (request/capability validation) after committing
-  the verified calibration-resource milestone; implement flow-rate before
-  pressure advance, temperature, retraction, then max volumetric speed.
-- P2-004/P2-007/P2-008 need real hardware, not available this session; the
-  upload protocol (P2-004, likely FTP-over-TLS per RESEARCH-P0-007.md)
-  could still be implemented and tested against a local server, the same
-  way P2-003's MQTT client was tested against a local broker.
+Pick the next unblocked `TODO.md` task (P1-010/011/012 format I/O +
+estimates/view modes, or P4-series geometry work) and continue
+autonomously; commit+push after each verified milestone. P2-004/P2-007/
+P2-008 need real hardware, not available this session; the upload protocol
+(P2-004, likely FTP-over-TLS per RESEARCH-P0-007.md) could still be
+implemented and tested against a local server, the same way P2-003's MQTT
+client was tested against a local broker.
+
 
 ## Relevant test/build commands
 - `Scripts/build-libslic3r.sh` — one-time/idempotent engine build.

@@ -16,6 +16,8 @@
 #include "libslic3r/Print.hpp"
 #include "libslic3r/PrintConfig.hpp"
 #include "libslic3r/miniz_extension.hpp"
+#include "libslic3r/Format/STEP.hpp"
+#include "libslic3r/Flow.hpp"
 #include <cstring>
 #include <array>
 #include <filesystem>
@@ -406,7 +408,8 @@ extern "C" int nsa1_generate_calibration_gcode(
     const bool pressure_advance = request->workflow == NSA1_CALIBRATION_PRESSURE_ADVANCE;
     const bool temperature = request->workflow == NSA1_CALIBRATION_TEMPERATURE;
     const bool retraction = request->workflow == NSA1_CALIBRATION_RETRACTION;
-    if (!pressure_advance && !temperature && !retraction &&
+    const bool max_volumetric_speed = request->workflow == NSA1_CALIBRATION_MAX_VOLUMETRIC_SPEED;
+    if (!pressure_advance && !temperature && !retraction && !max_volumetric_speed &&
         request->workflow != NSA1_CALIBRATION_FLOW_RATE)
         return fail("unsupported calibration workflow");
     if (!request->resource_path)
@@ -418,7 +421,7 @@ extern "C" int nsa1_generate_calibration_gcode(
     const size_t block_count = request->step > 0 && std::isfinite(request->step)
         ? static_cast<size_t>(std::floor(std::abs(request->end - request->start) / request->step + 1e-9)) + 1
         : 0;
-    if (pressure_advance || temperature || retraction) {
+    if (pressure_advance || temperature || retraction || max_volumetric_speed) {
         if (!std::isfinite(request->start) || !std::isfinite(request->end) ||
             !std::isfinite(request->step) || request->step <= 0 ||
             block_count == 0 || block_count > 200)
@@ -429,7 +432,7 @@ extern "C" int nsa1_generate_calibration_gcode(
     constexpr double first_ratio = 0.8;
     constexpr double last_ratio = 1.2;
     constexpr double ratio_step = 0.05;
-    if (!pressure_advance && !temperature && !retraction && (request->step <= 0 || request->start < first_ratio - 1e-6 ||
+    if (!pressure_advance && !temperature && !retraction && !max_volumetric_speed && (request->step <= 0 || request->start < first_ratio - 1e-6 ||
         request->end > last_ratio + 1e-6 ||
         std::abs(request->start - first_ratio) > 1e-6 ||
         std::abs(request->end - last_ratio) > 1e-6 ||
@@ -445,6 +448,13 @@ extern "C" int nsa1_generate_calibration_gcode(
             Slic3r::ModelObject *object = model.add_object();
             object->add_volume(std::move(mesh), Slic3r::ModelVolumeType::MODEL_PART, /*modify_to_center_geometry=*/false);
             object->add_instance();
+        } else if (max_volumetric_speed) {
+            bool cancelled = false;
+            Slic3r::Step step(std::string(request->resource_path));
+            if (step.load() != Slic3r::Step::Step_Status::LOAD_SUCCESS ||
+                step.mesh(&model, cancelled, false) != Slic3r::Step::Step_Status::MESH_SUCCESS ||
+                cancelled || model.objects.empty())
+                return fail("failed to load volumetric-speed calibration resource");
         } else if (!load_3mf_model(request->resource_path, model)) {
             return fail("failed to load calibration resource");
         }
@@ -475,6 +485,83 @@ extern "C" int nsa1_generate_calibration_gcode(
         const double zscale = (first_layer_height + 6.0 * layer_height) / 1.4;
         const float xy_scale = nozzle_diameter / 0.6f;
         for (auto *object : model.objects) {
+            if (object->instances.empty())
+                object->add_instance();
+        }
+        double max_vol_speed_mm3_per_mm = 1.0;
+        if (max_volumetric_speed) {
+            // Upstream Plater::calib_max_vol_speed fits the STEP tower to
+            // the bed width only (X axis) — a different rule from the
+            // flow-rate tower's XY+Z scale above, which targets a
+            // different model entirely and would distort this one.
+            Slic3r::ModelObject *object = model.objects.empty() ? nullptr : model.objects.front();
+            if (object == nullptr) return fail("volumetric-speed calibration resource has no objects");
+            const auto *bed_shape = config.option<Slic3r::ConfigOptionPoints>("printable_area");
+            if (bed_shape && !bed_shape->values.empty()) {
+                Slic3r::BoundingBoxf bed_ext;
+                for (const auto &pt : bed_shape->values) bed_ext.merge(pt);
+                const double obj_x = object->bounding_box().size().x();
+                if (obj_x > 0.0) {
+                    const double scale_obj = (bed_ext.size().x() - 10.0) / obj_x;
+                    if (scale_obj > 0.0 && scale_obj < 1.0) object->scale(scale_obj, 1.0, 1.0);
+                }
+            }
+            object->ensure_on_bed();
+            // Matches upstream's own calibration-tower settings exactly:
+            // single wall, no infill/top shell, spiral vase — every move in
+            // the resulting G-code is the calibrated speed, not diluted by
+            // infill/solid-fill moves running at unrelated speeds.
+            object->config.set_key_value("wall_loops", new Slic3r::ConfigOptionInt(1));
+            object->config.set_key_value("top_shell_layers", new Slic3r::ConfigOptionInt(0));
+            object->config.set_key_value("bottom_shell_layers", new Slic3r::ConfigOptionInt(1));
+            object->config.set_key_value("sparse_infill_density", new Slic3r::ConfigOptionPercent(0));
+            object->config.set_key_value("brim_type", new Slic3r::ConfigOptionEnum<Slic3r::BrimType>(Slic3r::BrimType::btOuterAndInner));
+            object->config.set_key_value("brim_width", new Slic3r::ConfigOptionFloat(3.0));
+            object->config.set_key_value("brim_object_gap", new Slic3r::ConfigOptionFloat(0.0));
+
+            // These exact values (not the generic layer_height above) are
+            // what the requested mm3/s values are converted against below
+            // — they must be the values actually applied to the print, or
+            // the emitted speed will not match what was requested.
+            const double line_width = nozzle_diameter * 1.75;
+            const double tower_layer_height = nozzle_diameter * 0.8;
+            config.set_key_value("outer_wall_line_width", new Slic3r::ConfigOptionFloat(line_width));
+            config.set_key_value("layer_height", new Slic3r::ConfigOptionFloat(tower_layer_height));
+            config.set_key_value("initial_layer_print_height", new Slic3r::ConfigOptionFloat(tower_layer_height));
+            // `spiral_mode` only exists on the global print config (not
+            // PrintObjectConfig/PrintRegionConfig) — `print.apply()` would
+            // silently discard it from `object->config`.
+            config.set_key_value("spiral_mode", new Slic3r::ConfigOptionBool(true));
+            // Disable the two heuristics that would otherwise auto-reduce
+            // speed (overhang/height slowdown, cooling slowdown) and
+            // un-clamp the filament's own max-volumetric-speed cap — any
+            // of these left in place would silently cap the emitted speed
+            // below the requested calibration value.
+            config.set_key_value("enable_overhang_speed", new Slic3r::ConfigOptionBoolsNullable(1, false));
+            config.set_key_value("enable_height_slowdown", new Slic3r::ConfigOptionBoolsNullable(1, false));
+            config.set_key_value("filament_max_volumetric_speed", new Slic3r::ConfigOptionFloatsNullable(1, 200.0));
+            config.set_key_value("slow_down_layer_time", new Slic3r::ConfigOptionInts{0});
+
+            // Matches upstream exactly (Plater.cpp calib_max_vol_speed):
+            // the actual material volume per mm of travel is the geometric
+            // cross-section times the filament's own flow ratio, not the
+            // geometric cross-section alone.
+            const auto *flow_ratio = config.option<Slic3r::ConfigOptionFloatsNullable>("filament_flow_ratio");
+            const double flow_ratio_value = flow_ratio && !flow_ratio->values.empty() ? flow_ratio->get_at(0) : 1.0;
+            max_vol_speed_mm3_per_mm =
+                Slic3r::Flow(line_width, tower_layer_height, nozzle_diameter).mm3_per_mm() * flow_ratio_value;
+
+            // Printer-safety: cut the tower close to the height the
+            // requested mm3/s range needs (upstream's own formula,
+            // including its deliberate +1 mm3/s of ramp slack above the
+            // requested end value — Plater.cpp/CalibUtils.cpp both use it
+            // unmodified), so the emitted G-code never travels anywhere
+            // near the full height of the bundled STEP resource.
+            const double requested_height = (request->end - request->start + 1.0) / request->step;
+            if (requested_height > 0.0 && requested_height < object->bounding_box().size().z())
+                cut_model_at_height(model, requested_height, Slic3r::ModelObjectCutAttribute::KeepLower);
+        } else {
+        for (auto *object : model.objects) {
             if (xy_scale > 1.2f) object->scale(xy_scale, xy_scale, zscale);
             else object->scale(1.0, 1.0, zscale);
             object->ensure_on_bed();
@@ -503,6 +590,7 @@ extern "C" int nsa1_generate_calibration_gcode(
                 object->config.set_key_value("print_flow_ratio", new Slic3r::ConfigOptionFloat(ratio));
             }
         }
+        }
         if (pressure_advance) {
             Slic3r::Calib_Params params;
             params.start = request->start;
@@ -513,8 +601,10 @@ extern "C" int nsa1_generate_calibration_gcode(
                 params, config, true, model, Slic3r::Vec3d::Zero());
             model.calib_pa_pattern->generate_custom_gcodes(config, true, model, Slic3r::Vec3d::Zero());
         }
-        config.set_key_value("layer_height", new Slic3r::ConfigOptionFloat(layer_height));
-        config.set_key_value("initial_layer_print_height", new Slic3r::ConfigOptionFloat(first_layer_height));
+        if (!max_volumetric_speed) {
+            config.set_key_value("layer_height", new Slic3r::ConfigOptionFloat(layer_height));
+            config.set_key_value("initial_layer_print_height", new Slic3r::ConfigOptionFloat(first_layer_height));
+        }
         config.set_key_value("reduce_crossing_wall", new Slic3r::ConfigOptionBool(true));
         config.set_key_value("enable_wrapping_detection", new Slic3r::ConfigOptionBool(false));
 
@@ -534,6 +624,14 @@ extern "C" int nsa1_generate_calibration_gcode(
             params.end = request->end;
             params.step = request->step;
             params.mode = Slic3r::CalibMode::Calib_Temp_Tower;
+            print.set_calib_params(params);
+        }
+        if (max_volumetric_speed) {
+            Slic3r::Calib_Params params;
+            params.start = request->start / max_vol_speed_mm3_per_mm;
+            params.end = request->end / max_vol_speed_mm3_per_mm;
+            params.step = request->step / max_vol_speed_mm3_per_mm;
+            params.mode = Slic3r::CalibMode::Calib_Vol_speed_Tower;
             print.set_calib_params(params);
         }
         Slic3r::StringObjectException validation = print.validate();
@@ -564,12 +662,12 @@ extern "C" int nsa1_generate_calibration_gcode(
         auto toolpath = std::make_unique<NSA1Toolpath>(
             NSA1Toolpath{segment_buffer.get(), segments.size()}
         );
-        const size_t result_block_count = pressure_advance || temperature || retraction ? block_count : 9;
+        const size_t result_block_count = pressure_advance || temperature || retraction || max_volumetric_speed ? block_count : 9;
         auto blocks = std::make_unique<NSA1CalibrationBlock[]>(result_block_count);
         for (size_t i = 0; i < result_block_count; ++i) {
             const double value = temperature
                 ? request->start + (request->end >= request->start ? 1.0 : -1.0) * static_cast<double>(i) * request->step
-                : pressure_advance || retraction ? request->start + static_cast<double>(i) * request->step
+                : pressure_advance || retraction || max_volumetric_speed ? request->start + static_cast<double>(i) * request->step
                                    : (80.0 + 5.0 * i) / 100.0;
             blocks[i] = NSA1CalibrationBlock{
                 i,

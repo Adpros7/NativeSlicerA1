@@ -256,6 +256,137 @@ final class CalibrationJobTests: XCTestCase {
         XCTAssertGreaterThanOrEqual(gcode.components(separatedBy: "Calib_Retraction_tower:").count, 4)
     }
 
+    func testMaxVolumetricSpeedCalibrationSlicesSTEPThroughRealEngine() throws {
+        let loader = try BambuProfileLoader()
+        let request = CalibrationRequest(
+            workflow: .maxVolumetricSpeed,
+            start: 5,
+            end: 7,
+            step: 1,
+            selection: .init()
+        )
+        let output = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString)
+            .appendingPathExtension("gcode")
+
+        let generation = try SlicingEngine.generateCalibrationGCode(
+            request: request,
+            resourceURL: try XCTUnwrap(CalibrationResources.url(named: "SpeedTestStructure")),
+            configEntries: try SlicingJob.resolvedConfigEntries(loader: loader),
+            outputPath: output.path
+        )
+
+        XCTAssertFalse(generation.toolpath.isEmpty)
+        XCTAssertEqual(generation.blocks.map(\.value), [5, 6, 7])
+        XCTAssertFalse(try String(contentsOf: output).isEmpty)
+    }
+
+    /// P3-002: proves the generated G-code's outer-wall feed rate actually
+    /// implements the requested mm3/s values — not just that calibration
+    /// metadata (`blocks`) echoes them back. Parses the real per-layer
+    /// speed the engine wrote (the same `Calib_Vol_speed_Tower` ramp
+    /// upstream's `GCode.cpp` computes: `outer_wall_speed =
+    /// round(params.start + print_z * params.step)` in mm/s, converted to
+    /// F in mm/min) and compares it against the expected speed derived
+    /// independently from the real `Flow::mm3_per_mm()` formula
+    /// (`height * (width - height * (1 - pi/4))`, `Flow.cpp:213-224`) for
+    /// the exact line width/layer height this workflow applies
+    /// (`nozzle_diameter * 1.75` / `nozzle_diameter * 0.8`,
+    /// `Plater.cpp:21420-21421`): `speed_mm_s = (requestedMm3PerS +
+    /// z * requestedStepMm3PerS) / mm3PerMm`.
+    func testMaxVolumetricSpeedCalibrationGCodeMatchesRequestedFlowRate() throws {
+        let loader = try BambuProfileLoader()
+        let request = CalibrationRequest(
+            workflow: .maxVolumetricSpeed,
+            start: 5,
+            end: 7,
+            step: 1,
+            selection: .init()
+        )
+        let output = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString)
+            .appendingPathExtension("gcode")
+        defer { try? FileManager.default.removeItem(at: output) }
+
+        _ = try SlicingEngine.generateCalibrationGCode(
+            request: request,
+            resourceURL: try XCTUnwrap(CalibrationResources.url(named: "SpeedTestStructure")),
+            configEntries: try SlicingJob.resolvedConfigEntries(loader: loader),
+            outputPath: output.path
+        )
+        let gcode = try String(contentsOf: output)
+
+        // Same nozzle-derived constants nsa1_generate_calibration_gcode
+        // applies for this workflow (CSlic3rBridge.cpp), including the
+        // default A1 profile's filament_flow_ratio (Generic PLA @base.json
+        // = 0.98) the engine's own flow math multiplies in.
+        let nozzleDiameter = 0.4
+        let lineWidth = nozzleDiameter * 1.75
+        let layerHeight = nozzleDiameter * 0.8
+        let filamentFlowRatio = 0.98
+        let mm3PerMm = layerHeight * (lineWidth - layerHeight * (1 - .pi / 4)) * filamentFlowRatio
+
+        // Independently confirm the overridden line width/layer height
+        // actually reached the sliced output (not just the arithmetic
+        // above) — real per-layer Z spacing and the real "; LINE_WIDTH:"
+        // comment BambuStudio's own G-code writer emits for the perimeter.
+        XCTAssertTrue(gcode.contains("; LINE_WIDTH: 0.7"), "expected the overridden outer_wall_line_width (0.7mm) to reach the sliced output")
+        let zHeights = gcode.split(separator: "\n")
+            .filter { $0.hasPrefix("; Z_HEIGHT:") }
+            .compactMap { Double($0.dropFirst("; Z_HEIGHT:".count).trimmingCharacters(in: .whitespaces)) }
+            .reduce(into: [Double]()) { if $0.last != $1 { $0.append($1) } } // spiral vase repeats the final marker
+        for (previous, next) in zip(zHeights, zHeights.dropFirst()) {
+            XCTAssertEqual(next - previous, layerHeight, accuracy: 0.001, "expected the overridden layer_height (0.32mm) to reach the sliced output")
+        }
+
+        // Walk "; Z_HEIGHT: <z>" markers; within each layer, the first bare
+        // "G1 F<value>" line (no X/Y/E) after the prime retraction is the
+        // real engine's calibrated outer-wall speed for that layer. The
+        // writer omits a redundant F command when the rounded speed hasn't
+        // changed since the previous layer, so not every layer has one;
+        // spiral vase also repeats the final Z marker once at EOF, which a
+        // same-value marker must not reopen as a new block.
+        var observed: [(z: Double, feedPerMin: Double)] = []
+        var currentZ: Double?
+        var sawFeedForCurrentZ = false
+        for rawLine in gcode.split(separator: "\n", omittingEmptySubsequences: false) {
+            let line = rawLine.trimmingCharacters(in: .whitespaces)
+            if line.hasPrefix("; Z_HEIGHT:") {
+                let z = Double(line.dropFirst("; Z_HEIGHT:".count).trimmingCharacters(in: .whitespaces))
+                if z != currentZ {
+                    currentZ = z
+                    sawFeedForCurrentZ = false
+                }
+                continue
+            }
+            guard let z = currentZ, !sawFeedForCurrentZ,
+                  line.hasPrefix("G1 F"), Double(line.dropFirst("G1 F".count)) != nil
+            else { continue }
+            observed.append((z, Double(line.dropFirst("G1 F".count))!))
+            sawFeedForCurrentZ = true
+        }
+
+        // Exclude the first layer (brim, not the calibrated tower wall),
+        // which never runs at the calibrated outer-wall speed.
+        let rampLayers = observed.count > 1 ? Array(observed.dropFirst()) : []
+        XCTAssertGreaterThanOrEqual(rampLayers.count, 5, "expected most of the 9-layer tower to report an explicit calibrated speed")
+
+        for (z, feedPerMin) in rampLayers {
+            let expectedSpeedMmPerS = (request.start + z * request.step) / mm3PerMm
+            let expectedFeedPerMin = (expectedSpeedMmPerS).rounded() * 60
+            XCTAssertEqual(
+                feedPerMin, expectedFeedPerMin, accuracy: 1,
+                "at Z=\(z), expected the real Calib_Vol_speed_Tower ramp (requested \(request.start)-\(request.end) mm3/s) to set F\(expectedFeedPerMin), got F\(feedPerMin)"
+            )
+        }
+
+        // The ramp must actually move, proving the per-layer ConfigOption
+        // override reaches `Print::process()` rather than staying static.
+        if let first = rampLayers.first, let last = rampLayers.last {
+            XCTAssertGreaterThan(last.feedPerMin, first.feedPerMin)
+        }
+    }
+
     /// Verify ProjectDocument creation + importModel works in this test class.
     func testProjectDocumentImportInCalibrationContext() {
         let document = ProjectDocument()
