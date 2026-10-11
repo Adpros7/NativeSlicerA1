@@ -66,6 +66,33 @@ typedef struct {
 /// failure.
 int nsa1_store_3mf(const char *path, const NSA1SceneObject *objects, size_t object_count);
 
+/// One `key = value` config entry, already serialized to libslic3r's own
+/// config string format (the same format `BambuProfileLoader`'s resolved
+/// JSON fields use: scalars as-is, arrays joined with `,` — matching
+/// BambuStudio's own `ConfigBase::load_from_json` separator convention).
+typedef struct {
+    const char *key;
+    const char *value;
+} NSA1ConfigEntry;
+
+/// Slices `object_count` placed objects (mesh + column-major placement
+/// matrix, same convention as `NSA1SceneObject`) with the resolved A1
+/// printer/process/filament config and writes real G-code to
+/// `out_gcode_path` via libslic3r's own `Print::apply`/`validate`/
+/// `process`/`export_gcode` pipeline (P1-008). Returns 0 on success, -1 on
+/// failure. On failure, `*out_error` is set to a newly allocated
+/// human-readable message (free with `nsa1_free_string`); on success
+/// `*out_error` is set to NULL.
+int nsa1_slice_to_gcode(
+    const NSA1SceneObject *objects, size_t object_count,
+    const NSA1ConfigEntry *config_entries, size_t config_entry_count,
+    const char *out_gcode_path,
+    char **out_error);
+
+/// Releases a string returned by `nsa1_slice_to_gcode`'s `out_error`. Safe
+/// to call with NULL.
+void nsa1_free_string(char *s);
+
 #ifdef __cplusplus
 }
 #endif

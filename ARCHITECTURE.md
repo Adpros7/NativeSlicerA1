@@ -43,6 +43,52 @@ Still true from the original plan: SwiftUI/AppKit never touches
 `libslic3r` types directly, only through this bridge target (now a C-ABI
 target, not a native-interop one).
 
+## P1-008: Conventional slicing bridge (real G-code via `Print::apply`/`process`/`export_gcode`)
+
+Extends the C-ABI bridge (not a new interop mechanism) with
+`nsa1_slice_to_gcode`: builds a `Slic3r::Model` from placed scene objects
+(same `TriangleMesh`/`ModelInstance` pattern as `nsa1_store_3mf`), seeds a
+`Slic3r::DynamicPrintConfig` from `DynamicPrintConfig::full_print_config()`,
+overlays the resolved Bambu A1 profile fields (`BambuProfileLoader`'s
+already-tested `inherits`-chain resolution, serialized to libslic3r's own
+comma-joined array format), then drives the engine's real
+`Print::apply(model, config)` → `validate()` → `process()` →
+`export_gcode(path)` pipeline — no reimplemented slicing logic.
+
+**Upstream bug found and worked around:** `DynamicPrintConfig::full_print_config()`
+clones each `ConfigOptionDef`'s raw `default_value` directly. For
+`coEnum`/`coEnums` options, that raw default value's `keys_map` pointer is
+never wired up (only `ConfigOptionDef::create_default_option()` — used by
+`set_deserialize()`'s "key not yet present" path — does that). Any enum
+option already seeded by `full_print_config()` therefore carries a null
+`keys_map` and null-derefs the instant anything calls `deserialize()` or
+`serialize()` on it (overriding it from a profile, or the engine itself
+embedding it in the G-code header's `; CONFIG_BLOCK` later — reproduced
+and diagnosed via `lldb` backtraces into
+`ConfigOptionEnumsGenericTempl<NULLABLE>::deserialize`/`serialize_single_value`).
+Worked around in `nsa1_slice_to_gcode` with a repair pass right after
+seeding: walk every currently-present option, and for any `coEnum`/
+`coEnums` option whose instance `keys_map` is null, copy it from the
+(correctly populated) `ConfigOptionDef::enum_keys_map`. Covers both the
+non-nullable (`ConfigOptionEnumsGeneric`) and nullable
+(`ConfigOptionEnumsGenericNullable`) variants.
+
+**Known gap:** the per-nozzle-variant `"include"` key (custom
+start/end/layer-change G-code template references, e.g. `Bambu Lab A1 0.4
+nozzle template machine_start_gcode.json`) is not resolved by
+`BambuProfileLoader`/the bridge — only `inherits` chains are. Slicing
+currently uses the engine's own default start/end G-code rather than the
+A1-specific templates. Tracked as a follow-up, not blocking real G-code
+generation (P1-008's acceptance: real engine, real A1 profile fields,
+real multi-layer G-code output — verified by `SlicingJobTests`).
+
+Verified by `SlicingJobTests.testSlicesCubeIntoRealGCode`: a real 20mm
+cube mesh, sliced through the real engine with the real vendored A1
+machine/process/filament profile closure, produces a real multi-layer
+(100 layers at 0.2mm) G-code file with the real BambuStudio-format header
+(`; BambuStudio 02.08.04.61`, `; nozzle_diameter = 0.4`, printer
+identification) — manually inspected, not just asserted in-test.
+
 
 ## P0-006: Metal rendering architecture
 

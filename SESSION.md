@@ -2,17 +2,17 @@
 
 ## Current phase
 Phase 1: Application Foundation (Phase 0 and Phase 9 docs complete; Phase 2
-partially complete). P1-001 through P1-007 are complete. Next unblocked:
-P1-008 conventional slicing.
+partially complete). P1-001 through P1-008 are complete. Next unblocked:
+P1-009 G-code visualization.
 
 ## Last completed task
-P1-007: Real 3MF project persistence plus the first real rendering
-milestone — imported STL/3MF geometry now reaches a GPU-backed Metal
-viewport.
+P1-008: Conventional slicing. Real G-code generation via libslic3r's own
+`Print::apply`/`validate`/`process`/`export_gcode` pipeline, driven by the
+real vendored A1 machine/process/filament profile closure. Committed and
+pushed as (see `git log`).
 
 ## Current task / progress
-No task in progress. P1-007 and viewport wiring were committed and pushed
-as `fd3bf06` (`feat: render imported meshes and persist 3MF projects`).
+No task in progress.
 
 ## Important technical decisions
 - **License**: AGPLv3 (RESEARCH.md P0-004) — required to reuse `libslic3r`.
@@ -40,16 +40,37 @@ as `fd3bf06` (`feat: render imported meshes and persist 3MF projects`).
   column-major transform). Metal buffers are built once per mesh and cached;
   only per-object uniforms are encoded each frame. Project replacement is
   transactional: a failed load retains the open scene.
+- **Conventional slicing (P1-008)**: `nsa1_slice_to_gcode` (CSlic3rBridge)
+  builds a `Slic3r::Model` from placed scene objects, seeds
+  `DynamicPrintConfig::full_print_config()`, overlays A1 profile fields
+  resolved by `BambuProfileLoader` (via `SlicingJob.resolvedConfigEntries`,
+  serialized to libslic3r's own comma-joined array string format), then
+  calls `Print::apply`/`validate`/`process`/`export_gcode`. **Upstream bug
+  worked around**: `full_print_config()`'s cloned `coEnum`/`coEnums`
+  defaults have a null `keys_map` (only `create_default_option()` wires it
+  up); null-derefs on `deserialize()`/`serialize()`. Fixed with a repair
+  pass copying `ConfigOptionDef::enum_keys_map` onto any option instance
+  (both `ConfigOptionEnumsGeneric` and the nullable variant) missing it,
+  run immediately after seeding, before any overrides. Diagnosed via
+  `lldb` crash backtraces (frame unwinding needed a full `bt` on the
+  stopped process via `-s <script>`, not `-o` batch commands, to get past
+  frame 0 in the optimized static lib). **Known gap**: the per-nozzle
+  `"include"` key (custom start/end/layer-change G-code templates) isn't
+  resolved by `BambuProfileLoader` — only `inherits` chains are — so
+  slicing currently uses the engine's own default G-code templates, not
+  the A1-specific ones. Tracked, not blocking (real engine + real A1
+  config + real G-code output already verified).
 - Printer networking (A1 discovery/MQTT): reimplemented natively in Swift
   from reverse-engineered protocol docs — Bambu's own implementation is
   closed-source (`bambu_networking` plugin, no public source). Not
   hardware-verified against a real printer (see TODO.md P2-002/003/006).
 
 ## Uncommitted changes
-None. Work through P1-007 is committed and pushed to `origin/master`.
+None after this session's commit (P1-008).
 
 ## Known blockers
 None. Open follow-ups (not blocking, tracked in TODO.md):
+- P1-008's `"include"` custom G-code template gap (see above).
 - P0-011 feature-parity matrix needs a file:line citation pass (currently
   a 274-row draft without per-row sourcing).
 - THIRD_PARTY_LICENSES.md has a few "📋 public record, not re-verified"
@@ -62,10 +83,11 @@ None. Open follow-ups (not blocking, tracked in TODO.md):
   code is protocol/documentation-level verified only.
 
 ## Next recommended action
-P1-008 conventional slicing: reuse `Slic3r::Print`/`BackgroundSlicingProcess`
-through a small C-ABI extension to run a configured A1 slice and return
-G-code. Investigate the existing BambuStudio execution path and config
-requirements before adding bridge code; do not write a parallel slicer.
+P1-009: G-code visualization (toolpath preview in the Metal viewport).
+`Print::export_gcode`'s `GCodeProcessorResult*` out-param (already wired
+up but discarded in `nsa1_slice_to_gcode`) carries per-move layer/extrusion
+data the engine's own G-code preview UI uses — investigate exposing that
+through the bridge rather than re-parsing the `.gcode` text file.
 
 ## Relevant test/build commands
 - `Scripts/build-libslic3r.sh` — one-time/idempotent engine build.
@@ -74,3 +96,5 @@ requirements before adding bridge code; do not write a parallel slicer.
   round-trip plus failed-load preservation.
 - `swift test --filter MetalRendererTests` — real mesh upload and draw
   encoding through the compiled GPU pipeline.
+- `swift test --filter SlicingJobTests` — real end-to-end G-code
+  generation through the A1 profile closure.

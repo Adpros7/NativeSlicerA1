@@ -8,6 +8,7 @@ enum SlicingEngineError: Error {
     case failedToWrite3MF(path: String)
     case objectIndexOutOfRange(path: String, index: Int)
     case unsupportedFileType(String)
+    case sliceFailed(String)
 }
 
 /// A real-geometry mesh loaded through the engine bridge: flat vertex (XYZ
@@ -72,6 +73,26 @@ private func withNSA1SceneObjects<R>(_ pending: [PendingSceneObject], _ body: (U
     return build(0, &acc)
 }
 
+/// Pins each config entry's key/value C strings for the call, mirroring
+/// `withNSA1SceneObjects`'s lifetime pattern.
+private func withNSA1ConfigEntries<R>(_ pending: [(key: String, value: String)], _ body: (UnsafePointer<NSA1ConfigEntry>?, Int) -> R) -> R {
+    func build(_ index: Int, _ acc: inout [NSA1ConfigEntry]) -> R {
+        guard index < pending.count else {
+            return acc.withUnsafeBufferPointer { body($0.baseAddress, acc.count) }
+        }
+        let entry = pending[index]
+        return entry.key.withCString { kptr in
+            entry.value.withCString { vptr in
+                acc.append(NSA1ConfigEntry(key: kptr, value: vptr))
+                return build(index + 1, &acc)
+            }
+        }
+    }
+    var acc: [NSA1ConfigEntry] = []
+    acc.reserveCapacity(pending.count)
+    return build(0, &acc)
+}
+
 /// Thin Swift wrapper over the C-ABI bridge into the real, vendored
 /// libslic3r (see ARCHITECTURE.md P0-005, RESEARCH.md P1-003). Proves the
 /// Swift executable actually links and calls into the compiled slicing
@@ -131,5 +152,36 @@ enum SlicingEngine {
             path.withCString { nsa1_store_3mf($0, ptr, count) }
         }
         guard result == 0 else { throw SlicingEngineError.failedToWrite3MF(path: path) }
+    }
+
+    /// Slices `objects` (mesh + placement matrix) with `configEntries` (A1
+    /// profile fields resolved by `SlicingJob`) and writes real G-code to
+    /// `outputPath` via the real engine's `Print::apply`/`validate`/
+    /// `process`/`export_gcode` pipeline (P1-008).
+    static func sliceToGCode(
+        objects: [(mesh: LoadedMesh, transform: simd_float4x4)],
+        configEntries: [(key: String, value: String)],
+        outputPath: String
+    ) throws {
+        let pendingObjects = objects.map {
+            PendingSceneObject(vertices: $0.mesh.vertices, indices: $0.mesh.indices, matrix16: flatten($0.transform))
+        }
+        var errorMessage: String?
+        let result = withNSA1SceneObjects(pendingObjects) { objPtr, objCount in
+            withNSA1ConfigEntries(configEntries) { cfgPtr, cfgCount in
+                outputPath.withCString { outPtr -> Int32 in
+                    var errPtr: UnsafeMutablePointer<CChar>?
+                    let r = nsa1_slice_to_gcode(objPtr, objCount, cfgPtr, cfgCount, outPtr, &errPtr)
+                    if let errPtr {
+                        errorMessage = String(cString: errPtr)
+                        nsa1_free_string(errPtr)
+                    }
+                    return r
+                }
+            }
+        }
+        guard result == 0 else {
+            throw SlicingEngineError.sliceFailed(errorMessage ?? "unknown engine error")
+        }
     }
 }

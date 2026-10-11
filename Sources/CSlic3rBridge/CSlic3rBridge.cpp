@@ -12,7 +12,10 @@
 #include "libslic3r/TriangleMesh.hpp"
 #include "libslic3r/Model.hpp"
 #include "libslic3r/Format/3mf.hpp"
+#include "libslic3r/Print.hpp"
+#include "libslic3r/PrintConfig.hpp"
 #include <cstring>
+#include <memory>
 
 namespace {
 NSA1Mesh *copy_mesh(const Slic3r::TriangleMesh &mesh) {
@@ -116,7 +119,8 @@ extern "C" int nsa1_3mf_object_matrix(const char *path, int64_t object_index, do
     return 0;
 }
 
-extern "C" int nsa1_store_3mf(const char *path, const NSA1SceneObject *objects, size_t object_count) {
+namespace {
+Slic3r::Model build_model_from_objects(const NSA1SceneObject *objects, size_t object_count) {
     Slic3r::Model model;
     for (size_t i = 0; i < object_count; ++i) {
         const NSA1SceneObject &obj = objects[i];
@@ -140,6 +144,94 @@ extern "C" int nsa1_store_3mf(const char *path, const NSA1SceneObject *objects, 
         trafo.matrix() = Eigen::Map<const Eigen::Matrix4d>(obj.matrix16);
         instance->set_transformation(Slic3r::Geometry::Transformation(trafo));
     }
+    return model;
+}
+
+char *copy_c_string(const std::string &s) {
+    char *out = new char[s.size() + 1];
+    std::memcpy(out, s.c_str(), s.size() + 1);
+    return out;
+}
+} // namespace
+
+extern "C" int nsa1_store_3mf(const char *path, const NSA1SceneObject *objects, size_t object_count) {
+    Slic3r::Model model = build_model_from_objects(objects, object_count);
     Slic3r::DynamicPrintConfig config;
     return Slic3r::store_3mf(path, &model, &config, /*fullpath_sources=*/true) ? 0 : -1;
+}
+
+extern "C" int nsa1_slice_to_gcode(
+    const NSA1SceneObject *objects, size_t object_count,
+    const NSA1ConfigEntry *config_entries, size_t config_entry_count,
+    const char *out_gcode_path,
+    char **out_error) {
+    *out_error = nullptr;
+    try {
+        if (object_count == 0) {
+            *out_error = copy_c_string("no objects to slice");
+            return -1;
+        }
+        Slic3r::Model model = build_model_from_objects(objects, object_count);
+
+        // Seed every FullPrintConfig default (nozzle/bed/process/filament
+        // option definitions), then overlay the resolved A1 profile fields
+        // on top — the same shape BambuProfileLoader already resolves
+        // (SPEC.md A1-only scope), reusing libslic3r's own config system
+        // rather than reimplementing option typing/validation.
+        Slic3r::DynamicPrintConfig config = Slic3r::DynamicPrintConfig::full_print_config();
+
+        // Upstream bug workaround: `FullPrintConfig::defaults()` clones
+        // each option's raw `ConfigOptionDef::default_value`, but for
+        // `coEnum`/`coEnums` options that default value was constructed
+        // without its `keys_map` (only `ConfigOptionDef::create_default_option()`
+        // wires that up). Any such option — most of `full_print_config()`'s
+        // seeded set — has a null `keys_map` and segfaults the moment
+        // anything calls `deserialize()`/`serialize()` on it (overriding
+        // it below, or the engine embedding it in the G-code header's
+        // config block later). Repair every such option in place first.
+        for (const std::string &key : config.keys()) {
+            const Slic3r::ConfigOptionDef *optdef = config.def()->get(key);
+            if (optdef == nullptr || optdef->enum_keys_map == nullptr) {
+                continue;
+            }
+            Slic3r::ConfigOption *opt = config.option(key);
+            if (auto *e = dynamic_cast<Slic3r::ConfigOptionEnumGeneric *>(opt)) {
+                if (e->keys_map == nullptr) e->keys_map = optdef->enum_keys_map;
+            } else if (auto *es = dynamic_cast<Slic3r::ConfigOptionEnumsGeneric *>(opt)) {
+                if (es->keys_map == nullptr) es->keys_map = optdef->enum_keys_map;
+            } else if (auto *esn = dynamic_cast<Slic3r::ConfigOptionEnumsGenericNullable *>(opt)) {
+                if (esn->keys_map == nullptr) esn->keys_map = optdef->enum_keys_map;
+            }
+        }
+
+        Slic3r::ConfigSubstitutionContext substitutions(Slic3r::ForwardCompatibilitySubstitutionRule::Disable);
+        for (size_t i = 0; i < config_entry_count; ++i) {
+            const std::string key = config_entries[i].key;
+            if (config.def()->get(key) == nullptr) {
+                continue; // profile metadata (name/inherits/setting_id/…), not a real engine option
+            }
+            config.set_deserialize(key, config_entries[i].value, substitutions);
+        }
+
+        config.normalize_fdm();
+
+        Slic3r::Print print;
+        print.apply(model, config);
+        Slic3r::StringObjectException err = print.validate();
+        if (!err.string.empty()) {
+            *out_error = copy_c_string(err.string);
+            return -1;
+        }
+        print.process();
+        Slic3r::GCodeProcessorResult result;
+        print.export_gcode(out_gcode_path, &result);
+        return 0;
+    } catch (const std::exception &e) {
+        *out_error = copy_c_string(e.what());
+        return -1;
+    }
+}
+
+extern "C" void nsa1_free_string(char *s) {
+    delete[] s;
 }
