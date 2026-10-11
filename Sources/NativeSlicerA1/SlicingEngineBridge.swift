@@ -8,7 +8,11 @@ enum SlicingEngineError: Error {
     case failedToWrite3MF(path: String)
     case objectIndexOutOfRange(path: String, index: Int)
     case unsupportedFileType(String)
+    case failedToWriteSTL(path: String, message: String)
+    case failedToReadOBJ(path: String)
+    case failedToWriteOBJ(path: String, message: String)
     case sliceFailed(String)
+    case failedToReadSTEP(path: String)
 }
 
 /// One real toolpath line segment from the engine's own
@@ -37,6 +41,23 @@ private func convert(_ raw: UnsafeMutablePointer<NSA1Mesh>) -> LoadedMesh {
     let vertices = Array(UnsafeBufferPointer(start: raw.pointee.vertices, count: vertexFloatCount))
     let indices = Array(UnsafeBufferPointer(start: raw.pointee.indices, count: raw.pointee.index_count))
     return LoadedMesh(vertices: vertices, indices: indices)
+}
+
+private func meshToUnsafeNSA1Mesh(_ mesh: LoadedMesh) -> UnsafeMutablePointer<NSA1Mesh> {
+    let raw = UnsafeMutablePointer<NSA1Mesh>.allocate(capacity: 1)
+    let vertexCount = mesh.vertices.count
+    let indexCount = mesh.indices.count
+    mesh.vertices.withUnsafeBufferPointer { vp in
+        mesh.indices.withUnsafeBufferPointer { ip in
+            raw.pointee = NSA1Mesh(
+                vertices: UnsafePointer(vp.baseAddress),
+                vertex_count: vertexCount,
+                indices: UnsafePointer(ip.baseAddress),
+                index_count: indexCount
+            )
+        }
+    }
+    return raw
 }
 
 /// Column-major flat form of a `simd_float4x4`, matching the C bridge's
@@ -122,6 +143,73 @@ enum SlicingEngine {
             throw SlicingEngineError.failedToReadSTL(path: path)
         }
         return convert(raw)
+    }
+
+    /// Writes a triangle mesh to a binary STL file via the real engine's
+    /// `TriangleMesh::write_binary` (P1-010).
+    static func storeSTL(atPath path: String, mesh: LoadedMesh) throws {
+        let raw = meshToUnsafeNSA1Mesh(mesh)
+        guard let rawPath = path.cString(using: .utf8) else {
+            throw SlicingEngineError.unsupportedFileType("invalid path encoding")
+        }
+        var errorPtr: UnsafeMutablePointer<CChar>? = nil
+        let result = nsa1_store_stl(rawPath, raw, &errorPtr)
+        if let errorPtr {
+            let msg = String(cString: errorPtr)
+            nsa1_free_string(errorPtr)
+            throw SlicingEngineError.failedToWriteSTL(path: path, message: msg)
+        }
+        guard result == 0 else { throw SlicingEngineError.failedToWriteSTL(path: path, message: "unknown error") }
+    }
+
+    /// Loads a binary STL file into a triangle mesh (P1-010).
+    static func loadSTLMeshBinary(atPath path: String) throws -> LoadedMesh {
+        guard let raw = path.cString(using: .utf8) else {
+            throw SlicingEngineError.unsupportedFileType("invalid path encoding")
+        }
+        guard let mesh = nsa1_load_stl_mesh_binary(raw) else {
+            throw SlicingEngineError.failedToReadSTL(path: path)
+        }
+        return convert(mesh)
+    }
+
+    /// Writes a triangle mesh to an OBJ file via the real engine's
+    /// `TriangleMesh::WriteOBJFile` (P1-010).
+    static func storeOBJ(atPath path: String, mesh: LoadedMesh) throws {
+        let raw = meshToUnsafeNSA1Mesh(mesh)
+        guard let rawPath = path.cString(using: .utf8) else {
+            throw SlicingEngineError.unsupportedFileType("invalid path encoding")
+        }
+        var errorPtr: UnsafeMutablePointer<CChar>? = nil
+        let result = nsa1_store_obj(rawPath, raw, &errorPtr)
+        if let errorPtr {
+            let msg = String(cString: errorPtr)
+            nsa1_free_string(errorPtr)
+            throw SlicingEngineError.failedToWriteOBJ(path: path, message: msg)
+        }
+        guard result == 0 else { throw SlicingEngineError.failedToWriteOBJ(path: path, message: "unknown error") }
+    }
+
+    static func loadOBJMesh(atPath path: String) throws -> LoadedMesh {
+        guard let raw = path.cString(using: .utf8) else {
+            throw SlicingEngineError.unsupportedFileType("invalid path encoding")
+        }
+        guard let mesh = nsa1_load_obj_mesh(raw) else {
+            throw SlicingEngineError.failedToReadOBJ(path: path)
+        }
+        return convert(mesh)
+    }
+
+    /// Loads an STEP file into a triangle mesh via the real engine's
+    /// `Step` class (OpenCascade tessellation, P1-010).
+    static func loadSTEPMesh(atPath path: String) throws -> LoadedMesh {
+        guard let raw = path.cString(using: .utf8) else {
+            throw SlicingEngineError.unsupportedFileType("invalid path encoding")
+        }
+        guard let mesh = nsa1_load_step_mesh(raw) else {
+            throw SlicingEngineError.failedToReadSTEP(path: path)
+        }
+        return convert(mesh)
     }
 
     /// Number of top-level model objects in a 3MF file, via the real

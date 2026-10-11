@@ -69,7 +69,90 @@ extern "C" void nsa1_free_mesh(NSA1Mesh *mesh) {
     delete mesh;
 }
 
+extern "C" int nsa1_store_stl(const char *path, const NSA1Mesh *mesh, char **out_error) {
+    std::vector<Slic3r::Vec3f> vertices(mesh->vertex_count);
+    std::vector<Slic3r::Vec3i> faces(mesh->index_count / 3);
+    for (size_t i = 0; i < mesh->vertex_count; ++i) {
+        vertices[i] = Slic3r::Vec3f(mesh->vertices[i * 3], mesh->vertices[i * 3 + 1], mesh->vertices[i * 3 + 2]);
+    }
+    for (size_t i = 0; i < mesh->index_count / 3; ++i) {
+        faces[i] = Slic3r::Vec3i(mesh->indices[i * 3], mesh->indices[i * 3 + 1], mesh->indices[i * 3 + 2]);
+    }
+    Slic3r::TriangleMesh m(vertices, faces);
+    try {
+        m.write_binary(path);
+        return 0;
+    } catch (const std::exception &e) {
+        if (out_error) *out_error = strdup(e.what());
+        return -1;
+    }
+}
+
+extern "C" NSA1Mesh *nsa1_load_stl_mesh_binary(const char *path) {
+    Slic3r::TriangleMesh m;
+    try {
+        // `ReadSTLFile` handles both binary and ASCII STL files.
+        if (!m.ReadSTLFile(path, /*repair=*/false)) return nullptr;
+        return copy_mesh(m);
+    } catch (const std::exception &) {
+        return nullptr;
+    }
+}
+
+extern "C" int nsa1_store_obj(const char *path, const NSA1Mesh *mesh, char **out_error) {
+    std::vector<Slic3r::Vec3f> vertices(mesh->vertex_count);
+    std::vector<Slic3r::Vec3i> faces(mesh->index_count / 3);
+    for (size_t i = 0; i < mesh->vertex_count; ++i) {
+        vertices[i] = Slic3r::Vec3f(mesh->vertices[i * 3], mesh->vertices[i * 3 + 1], mesh->vertices[i * 3 + 2]);
+    }
+    for (size_t i = 0; i < mesh->index_count / 3; ++i) {
+        faces[i] = Slic3r::Vec3i(mesh->indices[i * 3], mesh->indices[i * 3 + 1], mesh->indices[i * 3 + 2]);
+    }
+    Slic3r::TriangleMesh m(vertices, faces);
+    try {
+        m.WriteOBJFile(path);
+        return 0;
+    } catch (const std::exception &e) {
+        if (out_error) *out_error = strdup(e.what());
+        return -1;
+    }
+}
+
+extern "C" NSA1Mesh *nsa1_load_obj_mesh(const char *path) {
+    try {
+        Slic3r::TriangleMesh m;
+        Slic3r::ObjInfo obj_info;
+        std::string message;
+        if (!Slic3r::load_obj(path, &m, obj_info, message)) return nullptr;
+        return copy_mesh(m);
+    } catch (const std::exception &) {
+        return nullptr;
+    }
+}
+
+extern "C" NSA1Mesh *nsa1_load_step_mesh(const char *path) {
+    try {
+        // `Step` class takes a path string; `load()` returns Step::Step_Status
+        // (no arguments); `mesh(Model*, bool&, bool)` does the actual
+        Slic3r::Step step{std::string(path)};
+        bool cancelled = false;
+        Slic3r::Step::Step_Status status = step.load();
+        if (status != Slic3r::Step::Step_Status::LOAD_SUCCESS) return nullptr;
+        Slic3r::Model model;
+        status = step.mesh(&model, cancelled, /*isSplitCompound=*/false);
+        if (status != Slic3r::Step::Step_Status::MESH_SUCCESS || model.objects.empty()) {
+            return nullptr;
+        }
+        // Model::mesh() merges all objects/volumes into one transformed
+        // TriangleMesh (exactly how upstream STL export works).
+        Slic3r::TriangleMesh mesh = model.mesh();
+        return copy_mesh(mesh);
+    } catch (const std::exception &) {
+        return nullptr;
+    }
+}
 namespace {
+
 bool load_3mf_model(const char *path, Slic3r::Model &model) {
     Slic3r::DynamicPrintConfig config;
     Slic3r::ConfigSubstitutionContext substitutions(Slic3r::ForwardCompatibilitySubstitutionRule::Disable);

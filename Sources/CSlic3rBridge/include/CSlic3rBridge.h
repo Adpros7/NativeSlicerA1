@@ -35,15 +35,38 @@ NSA1Mesh *nsa1_load_stl_mesh(const char *path);
 /// Releases a mesh returned by `nsa1_load_stl_mesh`. Safe to call with NULL.
 void nsa1_free_mesh(NSA1Mesh *mesh);
 
+/// Writes a single triangle mesh to a binary STL file via
+/// TriangleMesh::write_binary (P1-010). Returns 0 on success, -1 on
+/// failure (out_error is set to a newly allocated message).
+int nsa1_store_stl(const char *path, const NSA1Mesh *mesh, char **out_error);
+
+/// Loads a binary STL file into a flat vertex/index mesh (P1-010).
+/// Returns NULL on failure.
+NSA1Mesh *nsa1_load_stl_mesh_binary(const char *path);
+
+/// Writes a single triangle mesh to an OBJ file via
+/// TriangleMesh::WriteOBJFile (P1-010). Returns 0 on success, -1 on
+/// failure (out_error is set to a newly allocated message).
+int nsa1_store_obj(const char *path, const NSA1Mesh *mesh, char **out_error);
+
+/// Loads an OBJ file into a flat vertex/index mesh (P1-010).
+/// Returns NULL on failure.
+NSA1Mesh *nsa1_load_obj_mesh(const char *path);
+
+/// Loads an STEP file into a flat vertex/index mesh via libslic3r's
+/// Step class (OpenCascade tessellation, P1-010). Returns NULL on
+/// failure.
+NSA1Mesh *nsa1_load_step_mesh(const char *path);
+
 /// Loads a 3MF file via libslic3r's `load_3mf` and returns the number of
 /// top-level model objects it contains, or -1 on failure.
 int64_t nsa1_3mf_object_count(const char *path);
 
 /// Loads a 3MF file and returns the first volume's mesh of the model
 /// object at `object_index`, or NULL on failure/out-of-range index.
-NSA1Mesh *nsa1_load_3mf_mesh(const char *path, int64_t object_index);
+int64_t nsa1_3mf_object_count(const char *path);
 
-/// Reads the first instance's placement matrix of the model object at
+NSA1Mesh *nsa1_load_3mf_mesh(const char *path, int64_t object_index);
 /// `object_index` into `out_matrix16` (column-major 4x4, i.e. `v' = M*v`
 /// for column vectors — the same convention as Swift's `simd_float4x4`).
 /// Returns 0 on success, -1 on failure/out-of-range index.
