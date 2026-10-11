@@ -58,6 +58,7 @@ any component below is *more* restrictive than AGPLv3 permits combining
 | libjpeg-turbo | 3.0.1 | BSD-3-Clause / zlib / IJG (mixed, permissive) | 📋 public record |
 | libpng | (deps/PNG, opencv 3rdparty copy also present) | libpng license (permissive) | 📋 public record |
 | zlib | system (macOS SDK `libz.tbd`) | zlib License | 📋 public record |
+| zstd | 1.5.7 | BSD License (dual BSD/GPLv2, BSD used by default) | ✅ checked (`LICENSE` file in fetched source) |
 | OpenMeshCraft + OpenMeshCraftBoolean | (deps/OpenMeshCraft, BambuStudio-authored wrapper) | GPL-3.0 | ✅ checked (`LICENSE` file in fetched source) |
 | libnoise | (deps/libnoise) | LGPL-2.1 | ✅ checked (`COPYING.txt` in fetched source) |
 

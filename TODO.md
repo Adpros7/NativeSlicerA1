@@ -113,6 +113,29 @@
   checked from source vs 📋 public record pending re-verification). No
   AGPLv3-incompatible license identified; CGAL dual-license scope flagged
   as a follow-up to confirm precisely.
+- [x] P9-007: Fix macOS deployment-target/zstd linker warning. Root cause:
+  `Package.swift` hardcoded a link against Homebrew's
+  `/opt/homebrew/lib/libzstd.*.dylib` (pulled in transitively by Boost's
+  `iostreams` zstd filter and Blosc/OpenVDB's zstd codec, both of which
+  `find_package(zstd)`/`find_library` at configure time) — a
+  machine-specific, mutable dependency built for whatever macOS SDK the
+  *build host* has (observed: 26.0), independent of our
+  `CMAKE_OSX_DEPLOYMENT_TARGET=14.0`. Every one of the project's other
+  ~25 third-party deps is already built from source against 14.0;
+  Homebrew zstd was the sole exception. Fix: `Scripts/build-libslic3r.sh`
+  now builds zstd 1.5.7 itself as a project-local, static-only CMake
+  `ExternalProject` (matching the existing from-source deps pipeline),
+  wired as an explicit `DEPENDS` of Boost and Blosc so it's always built
+  and resolved first; `Package.swift` links the resulting
+  `.../usr/local/lib/libzstd.a` instead of the Homebrew dylib, and the
+  now-unneeded `/opt/homebrew/lib` rpath was removed. See
+  ARCHITECTURE.md for the full writeup (including why Boost's own zstd
+  iostream filter ends up compiled out — deterministic, not a race).
+  Verified: clean `swift build` has zero zstd/deployment-target
+  warnings; `otool -l` on the built binary shows `LC_BUILD_VERSION minos
+  14.0 sdk 14.0`; `otool -L` shows zero `/opt/homebrew` (or any
+  non-`/usr/lib`, non-`/System/Library`) dylibs; `swift test` — all 43
+  tests still pass.
 
 
 ## Task Completion Rules

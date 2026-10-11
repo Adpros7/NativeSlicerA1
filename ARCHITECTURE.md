@@ -290,3 +290,88 @@ parallel settings model:
   sets `document.lastError` right away. Unreachable with the real
   vendored A1 closure (every nozzle variant has ≥1 compatible process and
   filament, verified directly), but cheap to harden regardless.
+
+## P9-007: macOS deployment-target / zstd linker warning fix
+
+**Symptom**: `swift build` emitted "building for macOS-14.0, but linking
+with dylib '/opt/homebrew/opt/zstd/lib/libzstd.1.dylib' which was built
+for newer version 26.0".
+
+**Root cause, traced to the actual symbol need, not just the warning**:
+`Package.swift`'s flat linker-flags list (see P0-005/P1-003 above)
+hardcoded `/opt/homebrew/lib/libzstd.1.5.7.dylib`. Confirmed via `nm -u`
+that two of the vendored static deps have genuinely undefined `ZSTD_*`
+symbols at their own archive level: `libboost_iostreams.a` (Boost's
+optional zstd `iostreams` filter, `boost_iostreams_option(...)` in
+`libs/iostreams/CMakeLists.txt`, gated on `find_package(zstd)`) and
+`libblosc.a` (OpenVDB's Blosc codec dependency — Blosc's own
+`internal-complibs` normally bundles zstd 1.4.1 as a `OBJECT` library,
+but that only gets absorbed into the final link automatically through
+CMake's own target graph; our Swift linker line is a hand-computed flat
+list of `.a` paths — see P0-005 — so those internal objects never reach
+the final link, and Blosc's own compiled code still references bare
+`ZSTD_*` symbols that have to come from *somewhere* in that flat list).
+Both deps found Homebrew's zstd via plain `find_library`/`find_package`
+at CMake configure time, because every other one of this project's ~25
+third-party deps is built from source against
+`CMAKE_OSX_DEPLOYMENT_TARGET=14.0` (`Scripts/build-libslic3r.sh`) — zstd
+was the one dependency nobody vendored, so it fell through to whatever
+the build host happens to have installed via Homebrew, a dylib that
+tracks the *host's* SDK (observed: 26.0) rather than this project's
+deployment target. Upstream BambuStudio's own `deps/CMakeLists.txt`
+doesn't vendor zstd either — a comment there
+(`CMakeLists.txt:525-527`) notes "on Windows/macOS zstd comes from the
+prebuilt deps / vcpkg", i.e. upstream's *official* build pulls it from a
+separately-fetched prebuilt dependency bundle this from-source build
+never used.
+
+**Fix**: build zstd 1.5.7 the same way as every other dependency.
+`Scripts/build-libslic3r.sh` now injects a `deps/ZSTD/ZSTD.cmake`
+(`bambustudio_add_cmake_project(ZSTD ...)`, static-only:
+`ZSTD_BUILD_SHARED=OFF`/`ZSTD_BUILD_STATIC=ON`, pinned tarball +
+SHA-256) into the vendored (gitignored, freshly-cloned) `deps/CMakeLists.txt`,
+and patches `Boost.cmake`/`Blosc.cmake` to add `DEPENDS ${ZSTD_PKG}` so
+it's always built and installed (into the same
+`BambuStudio_deps/usr/local` prefix as everything else, found first via
+the `CMAKE_PREFIX_PATH` every `bambustudio_add_cmake_project` dep
+already receives) before either consumer configures. `Package.swift`
+now links the resulting `.../usr/local/lib/libzstd.a` instead of the
+Homebrew dylib; the now-unneeded `-rpath /opt/homebrew/lib` linker flag
+was removed (nothing else used it). For checkouts whose deps were
+already built before this fix existed, the script also force-rebuilds
+just `dep_ZSTD`/`dep_Boost`/`dep_Blosc` (deletes their stale
+`ExternalProject` prefix dirs so their cached `CMakeCache.txt` — which
+would otherwise keep resolving Homebrew's copy — gets regenerated),
+leaving the other ~23 already-built deps untouched.
+
+**Side effect, verified deterministic (not a race)**: after the fix,
+`libboost_iostreams.a` has *zero* undefined `ZSTD_*` symbols — Boost's
+`iostreams_option` macro for zstd hardcodes a check for the
+`zstd::libzstd_shared` imported CMake target specifically; since zstd was
+built static-only (`ZSTD_BUILD_SHARED=OFF`, matching this project's
+`BUILD_SHARED_LIBS=OFF` policy for every other dep), that target never
+exists, so `BOOST_IOSTREAMS_ENABLE_ZSTD` evaluates `OFF` regardless of
+`zstd_FOUND` — confirmed via the generated `CMakeCache.txt`, not
+inferred. This is harmless: `libslic3r` never calls
+`boost::iostreams::zstd_compressor`/`zstd_decompressor` anywhere (grepped
+the full vendored source tree, zero hits) — the filter was always dead
+weight pulled in opportunistically by whatever zstd the build host had.
+Blosc's undefined symbols are unaffected by this (Blosc's own
+`find_library(zstd)` path is independent of Boost's CMake-target-based
+check) and are satisfied by the new `libzstd.a` at final link,
+regardless of which internal-vs-external choice Blosc's own CMake
+options believe they made — the linker only cares that the symbol names
+match, and both Blosc's bundled zstd-1.4.1 sources and upstream zstd
+1.5.7 export the same stable `ZSTD_*` C API.
+
+**Verification**:
+- `swift build` (clean, `rm -rf .build` first): zero zstd/deployment
+  warnings (grepped full log).
+- `otool -l .build/.../NativeSlicerA1 | grep -A4 LC_BUILD_VERSION`:
+  `minos 14.0 sdk 14.0`.
+- `otool -L .build/.../NativeSlicerA1`: every entry is `/usr/lib/*` or
+  `/System/Library/Frameworks/*` (SDK-provided, always matches the
+  runtime OS) — zero `/opt/homebrew` or other third-party dylibs.
+- `swift test`: all 43 tests still pass (no behavioral change — zstd was
+  never on a code path `libslic3r` actually exercises for this project's
+  STL/3MF/G-code pipeline).

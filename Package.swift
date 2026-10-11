@@ -116,10 +116,6 @@ let package = Package(
             resources: [.copy("Resources/Profiles")],
             linkerSettings: [
                 .unsafeFlags([
-            "-Xlinker",
-            "-rpath",
-            "-Xlinker",
-            "/opt/homebrew/lib",
             "\(repoRoot)/vendor/BambuStudio/build/arm64/nsa1_bridge/libnsa1_libslic3r_leak_shim.a",
             "\(repoRoot)/vendor/BambuStudio/build/arm64/src/libslic3r/liblibslic3r.a",
             "\(repoRoot)/vendor/BambuStudio/build/arm64/src/libnest2d/liblibnest2d.a",
@@ -200,7 +196,7 @@ let package = Package(
             "\(repoRoot)/vendor/BambuStudio/deps/build/arm64/BambuStudio_deps/usr/local/lib/libboost_random.a",
             "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk/usr/lib/libbz2.tbd",
             "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk/usr/lib/liblzma.tbd",
-            "/opt/homebrew/lib/libzstd.1.5.7.dylib",
+            "\(repoRoot)/vendor/BambuStudio/deps/build/arm64/BambuStudio_deps/usr/local/lib/libzstd.a",
             "\(repoRoot)/vendor/BambuStudio/deps/build/arm64/BambuStudio_deps/usr/local/lib/libHalf-2_5.a",
             "\(repoRoot)/vendor/BambuStudio/deps/build/arm64/BambuStudio_deps/usr/local/lib/libblosc.a",
             "\(repoRoot)/vendor/BambuStudio/deps/build/arm64/BambuStudio_deps/usr/local/lib/libtbb.a",

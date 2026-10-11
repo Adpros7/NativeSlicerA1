@@ -2,32 +2,38 @@
 
 ## Current phase
 Phase 1 (Application Foundation) and Phase 2's non-hardware items complete.
-Phase 3 (Feature Parity): P3-003 (advanced slicing settings) complete this
-session. Next unblocked: P3-001 (audited missing features), P3-002
-(calibration workflows), or Phase 2's hardware-adjacent P2-004/P2-007/P2-008
-(not hardware-verifiable this session).
+Phase 3 (Feature Parity): P3-003 (advanced slicing settings) complete.
+Phase 9: P9-007 (macOS deployment-target/zstd fix) complete this session.
+Next unblocked: P3-001 (audited feature-parity), P3-002 (calibration
+workflows), or Phase 2's hardware-adjacent P2-004/P2-007/P2-008 (not
+hardware-verifiable this session).
 
 ## Last completed task
-P3-003: Advanced slicing settings. Native SwiftUI printer/nozzle, process,
-and filament profile pickers (`SlicingSettingsView`) plus layer
-height/walls/infill/supports/temperature overrides, backed entirely by the
-same vendored A1 profile closure and config keys the slicing pipeline
-itself uses (not a parallel UI-only model). Invalid profile combinations
-rejected via real `compatible_printers` validation (`SlicingJob.validate`,
-called automatically before every slice/save). Settings persist across
-project save/reload through the real engine's 3MF project config
-(`nsa1_store_3mf`/`nsa1_load_3mf_config`) — required working around an
-upstream `load_3mf` read-path gap (see ARCHITECTURE.md P3-003). Also
-closed the P1-008 "per-nozzle include G-code templates" known gap
-(`BambuProfileLoader.resolve` now merges `include` lists, mirroring
-`PresetBundle.cpp`'s precedence). Preceded by an independent verification
-pass of the existing `DynamicPrintConfig` null-`keys_map` fix (reproduced
-the real SIGSEGV with the repair pass disabled, confirmed fixed, added
-targeted regression tests, got an independent subagent code review — no
-changes needed). Committed and pushed (see `git log`).
+P9-007: Fixed the macOS deployment-target/zstd linker warning
+("building for macOS-14.0, but linking with dylib
+'/opt/homebrew/opt/zstd/lib/libzstd.1.dylib' which was built for newer
+version 26.0"). Root cause: `Package.swift` hardcoded a link against
+Homebrew's zstd dylib — the one dependency, out of ~25, not built
+project-locally against this project's `CMAKE_OSX_DEPLOYMENT_TARGET=14.0`
+(pulled in transitively by Boost::iostreams' optional zstd filter and
+Blosc/OpenVDB's zstd codec). Fix: `Scripts/build-libslic3r.sh` now builds
+zstd 1.5.7 itself as a static-only, project-local CMake `ExternalProject`
+(pinned tarball + SHA-256), wired as an explicit dependency of Boost and
+Blosc so it's always resolved first via the standard
+`BambuStudio_deps/usr/local` prefix; `Package.swift` links the resulting
+`libzstd.a` instead of the Homebrew dylib, and the now-dead
+`/opt/homebrew/lib` rpath flag was removed. Full root-cause/fix writeup
+in ARCHITECTURE.md P9-007 (including why Boost's own zstd filter ends up
+compiled out as a deterministic, harmless side effect — unused by
+libslic3r regardless). Verified: clean `swift build` has zero
+zstd/deployment warnings; `otool -l` on the built binary shows
+`LC_BUILD_VERSION minos 14.0 sdk 14.0`; `otool -L` shows zero
+`/opt/homebrew` (or any non-`/usr/lib`, non-`/System/Library`) dylibs;
+`swift test` — all 43 tests still pass. Committed and pushed.
 
 ## Current task / progress
-No task in progress.
+No task in progress. Next: P3-001 (feature-parity audit against upstream
+BambuStudio/OrcaSlicer source) or P3-002 (calibration workflows).
 
 ## Important technical decisions
 - **License**: AGPLv3 (RESEARCH.md P0-004) — required to reuse `libslic3r`.
