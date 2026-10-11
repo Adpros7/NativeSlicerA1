@@ -405,7 +405,8 @@ extern "C" int nsa1_generate_calibration_gcode(
         return fail("invalid calibration request");
     const bool pressure_advance = request->workflow == NSA1_CALIBRATION_PRESSURE_ADVANCE;
     const bool temperature = request->workflow == NSA1_CALIBRATION_TEMPERATURE;
-    if (!pressure_advance && !temperature &&
+    const bool retraction = request->workflow == NSA1_CALIBRATION_RETRACTION;
+    if (!pressure_advance && !temperature && !retraction &&
         request->workflow != NSA1_CALIBRATION_FLOW_RATE)
         return fail("unsupported calibration workflow");
     if (!request->resource_path)
@@ -417,7 +418,7 @@ extern "C" int nsa1_generate_calibration_gcode(
     const size_t block_count = request->step > 0 && std::isfinite(request->step)
         ? static_cast<size_t>(std::floor(std::abs(request->end - request->start) / request->step + 1e-9)) + 1
         : 0;
-    if (pressure_advance || temperature) {
+    if (pressure_advance || temperature || retraction) {
         if (!std::isfinite(request->start) || !std::isfinite(request->end) ||
             !std::isfinite(request->step) || request->step <= 0 ||
             block_count == 0 || block_count > 200)
@@ -428,7 +429,7 @@ extern "C" int nsa1_generate_calibration_gcode(
     constexpr double first_ratio = 0.8;
     constexpr double last_ratio = 1.2;
     constexpr double ratio_step = 0.05;
-    if (!pressure_advance && !temperature && (request->step <= 0 || request->start < first_ratio - 1e-6 ||
+    if (!pressure_advance && !temperature && !retraction && (request->step <= 0 || request->start < first_ratio - 1e-6 ||
         request->end > last_ratio + 1e-6 ||
         std::abs(request->start - first_ratio) > 1e-6 ||
         std::abs(request->end - last_ratio) > 1e-6 ||
@@ -437,7 +438,7 @@ extern "C" int nsa1_generate_calibration_gcode(
 
     try {
         Slic3r::Model model;
-        if (pressure_advance || temperature) {
+        if (pressure_advance || temperature || retraction) {
             Slic3r::TriangleMesh mesh;
             if (!mesh.ReadSTLFile(request->resource_path, /*repair=*/false))
                 return fail("failed to load calibration resource");
@@ -477,11 +478,15 @@ extern "C" int nsa1_generate_calibration_gcode(
             if (xy_scale > 1.2f) object->scale(xy_scale, xy_scale, zscale);
             else object->scale(1.0, 1.0, zscale);
             object->ensure_on_bed();
-            object->config.set_key_value("wall_loops", new Slic3r::ConfigOptionInt(3));
-            object->config.set_key_value("sparse_infill_density", new Slic3r::ConfigOptionPercent(35));
-            object->config.set_key_value("bottom_shell_layers", new Slic3r::ConfigOptionInt(1));
-            object->config.set_key_value("top_shell_layers", new Slic3r::ConfigOptionInt(5));
-            object->config.set_key_value("detect_thin_wall", new Slic3r::ConfigOptionBool(true));
+            object->config.set_key_value("wall_loops", new Slic3r::ConfigOptionInt(retraction ? 2 : 3));
+            object->config.set_key_value("sparse_infill_density", new Slic3r::ConfigOptionPercent(retraction ? 0 : 35));
+            object->config.set_key_value("bottom_shell_layers", new Slic3r::ConfigOptionInt(retraction ? 3 : 1));
+            object->config.set_key_value("top_shell_layers", new Slic3r::ConfigOptionInt(retraction ? 0 : 5));
+            object->config.set_key_value("detect_thin_wall", new Slic3r::ConfigOptionBool(!retraction));
+            if (retraction) {
+                object->config.set_key_value("initial_layer_print_height", new Slic3r::ConfigOptionFloat(0.2));
+                object->config.set_key_value("layer_height", new Slic3r::ConfigOptionFloat(0.2));
+            }
             if (temperature) {
                 const int start_temperature = static_cast<int>(std::lround(request->start));
                 config.set_key_value("nozzle_temperature_initial_layer", new Slic3r::ConfigOptionIntsNullable(1, start_temperature));
@@ -489,7 +494,7 @@ extern "C" int nsa1_generate_calibration_gcode(
                 object->config.set_key_value("brim_type", new Slic3r::ConfigOptionEnum<Slic3r::BrimType>(Slic3r::BrimType::btOuterOnly));
                 object->config.set_key_value("brim_width", new Slic3r::ConfigOptionFloat(5.0));
                 object->config.set_key_value("brim_object_gap", new Slic3r::ConfigOptionFloat(0.0));
-            } else if (!pressure_advance) {
+            } else if (!pressure_advance && !retraction) {
                 std::string name = object->name;
                 if (name.rfind("flowrate_", 0) != 0) return fail("invalid flow-rate calibration resource");
                 name.erase(0, 9);
@@ -515,6 +520,14 @@ extern "C" int nsa1_generate_calibration_gcode(
 
         Slic3r::Print print;
         print.apply(model, config);
+        if (retraction) {
+            Slic3r::Calib_Params params;
+            params.start = request->start;
+            params.end = request->end;
+            params.step = request->step;
+            params.mode = Slic3r::CalibMode::Calib_Retraction_tower;
+            print.set_calib_params(params);
+        }
         if (temperature) {
             Slic3r::Calib_Params params;
             params.start = request->start;
@@ -551,12 +564,12 @@ extern "C" int nsa1_generate_calibration_gcode(
         auto toolpath = std::make_unique<NSA1Toolpath>(
             NSA1Toolpath{segment_buffer.get(), segments.size()}
         );
-        const size_t result_block_count = pressure_advance || temperature ? block_count : 9;
+        const size_t result_block_count = pressure_advance || temperature || retraction ? block_count : 9;
         auto blocks = std::make_unique<NSA1CalibrationBlock[]>(result_block_count);
         for (size_t i = 0; i < result_block_count; ++i) {
             const double value = temperature
                 ? request->start + (request->end >= request->start ? 1.0 : -1.0) * static_cast<double>(i) * request->step
-                : pressure_advance ? request->start + static_cast<double>(i) * request->step
+                : pressure_advance || retraction ? request->start + static_cast<double>(i) * request->step
                                    : (80.0 + 5.0 * i) / 100.0;
             blocks[i] = NSA1CalibrationBlock{
                 i,

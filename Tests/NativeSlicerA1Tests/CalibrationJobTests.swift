@@ -226,6 +226,36 @@ final class CalibrationJobTests: XCTestCase {
             searchStart = range.upperBound
         }
     }
+    func testRetractionCalibrationUsesRealEngineRetractionBlocksAndToolpath() throws {
+        let loader = try BambuProfileLoader()
+        let request = CalibrationRequest(
+            workflow: .retraction,
+            start: 0.2,
+            end: 0.6,
+            step: 0.2,
+            selection: .init()
+        )
+        try CalibrationJob.validate(request, loader: loader, capabilities: .all)
+        let output = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString)
+            .appendingPathExtension("gcode")
+        defer { try? FileManager.default.removeItem(at: output) }
+
+        let generation = try SlicingEngine.generateCalibrationGCode(
+            request: request,
+            resourceURL: try XCTUnwrap(CalibrationResources.url(named: "retraction_tower")),
+            configEntries: try SlicingJob.resolvedConfigEntries(loader: loader),
+            outputPath: output.path
+        )
+
+        XCTAssertFalse(generation.toolpath.isEmpty)
+        XCTAssertEqual(generation.blocks.count, 3)
+        XCTAssertTrue(zip(generation.blocks.map(\.value), [0.2, 0.4, 0.6]).allSatisfy { abs($0.0 - $0.1) < 0.0001 })
+        XCTAssertGreaterThan(generation.toolpath.filter(\.isTravel).count, 0)
+        let gcode = try String(contentsOf: output)
+        XCTAssertGreaterThanOrEqual(gcode.components(separatedBy: "Calib_Retraction_tower:").count, 4)
+    }
+
     /// Verify ProjectDocument creation + importModel works in this test class.
     func testProjectDocumentImportInCalibrationContext() {
         let document = ProjectDocument()
