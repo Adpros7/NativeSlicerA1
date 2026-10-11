@@ -35,14 +35,18 @@ are complete. The connectivity-specific source audit is retained in
 `RESEARCH-P0-011-CONNECTIVITY.md`.
 
 ## Current task / progress
-P3-002 design complete and stored in
-`docs/superpowers/plans/2026-10-11-calibration-workflows.md`. Task 1
-completed: five exact BambuStudio AGPLv3 calibration assets bundled
-(flow pass 1/2, temperature tower, retraction tower, volumetric-speed
-STEP), provenance retained in `Resources/Calibration/NOTICE.md`, lookup
-covered by a red→green XCTest, and the complete suite now has 44 passing
-tests. Next: Task 2, validated request/capability domain model; then the
-flow-rate bridge, before any other calibration workflow.
+P3-002 design is stored in
+`docs/superpowers/plans/2026-10-11-calibration-workflows.md`. Completed:
+Task 1's five exact BambuStudio AGPLv3 calibration assets (flow pass
+1/2, temperature tower, retraction tower, volumetric-speed STEP),
+provenance, resource lookup, and red→green XCTest; Task 2's
+`CalibrationRequest`/`CalibrationWorkflow` pure validation. The
+validator first reuses `SlicingJob.validate` for machine/process/filament
+compatibility, accepts ascending or descending calibration ranges with a
+positive finite step and a 200-block cap, and requires an explicit
+capability set (so PA cannot be inferred from the printer name). Full
+suite: 47 tests passing. Next: bridge ABI/resource failure path, then
+real flow-rate generation.
 
 ## Important technical decisions
 - **License**: AGPLv3 (RESEARCH.md P0-004) — required to reuse `libslic3r`.
