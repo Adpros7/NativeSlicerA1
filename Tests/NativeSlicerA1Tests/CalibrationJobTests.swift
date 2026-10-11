@@ -172,6 +172,60 @@ final class CalibrationJobTests: XCTestCase {
             searchStart = range.upperBound
         }
     }
+    
+    func testTemperatureCalibrationSlicesTowerThroughRealEngine() throws {
+        let loader = try BambuProfileLoader()
+        let request = CalibrationRequest(
+            workflow: .temperature,
+            start: 230,
+            end: 220,
+            step: 5,
+            selection: .init()
+        )
+        try CalibrationJob.validate(request, loader: loader, capabilities: .all)
+        let output = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString)
+            .appendingPathExtension("gcode")
+        defer { try? FileManager.default.removeItem(at: output) }
+
+        let generation = try SlicingEngine.generateCalibrationGCode(
+            request: request,
+            resourceURL: try XCTUnwrap(CalibrationResources.url(named: "temperature_tower")),
+            configEntries: try SlicingJob.resolvedConfigEntries(loader: loader),
+            outputPath: output.path
+        )
+
+        XCTAssertFalse(generation.toolpath.isEmpty)
+        XCTAssertEqual(generation.blocks.map(\.value), [230, 225, 220])
+        let gcode = try String(contentsOf: output)
+        var currentZ = -1.0
+        var temperatureChanges: [(temperature: Int, z: Double)] = []
+        for line in gcode.split(whereSeparator: \.isNewline) {
+            let text = String(line)
+            if text.hasPrefix("; Z_HEIGHT: ") {
+                currentZ = Double(text.dropFirst("; Z_HEIGHT: ".count)) ?? currentZ
+            } else if text.hasPrefix("M104 S"), text.contains("; set nozzle temperature"),
+                      let temperature = Int(text.dropFirst("M104 S".count).split(separator: " ").first ?? "") {
+                temperatureChanges.append((temperature, currentZ))
+            }
+        }
+        for (temperature, expectedZ) in [(230, 0.2), (225, 10.2), (220, 20.2)] {
+            let change = try XCTUnwrap(
+                temperatureChanges.first(where: { $0.temperature == temperature }),
+                "missing layer temperature \(temperature)"
+            )
+            XCTAssertEqual(change.z, expectedZ, accuracy: 0.2)
+        }
+        var searchStart = gcode.startIndex
+        for temperature in [230, 225, 220] {
+            let marker = "M104 S\(temperature)"
+            let range = try XCTUnwrap(
+                gcode.range(of: marker, range: searchStart..<gcode.endIndex),
+                "missing \(marker)"
+            )
+            searchStart = range.upperBound
+        }
+    }
     /// Verify ProjectDocument creation + importModel works in this test class.
     func testProjectDocumentImportInCalibrationContext() {
         let document = ProjectDocument()
