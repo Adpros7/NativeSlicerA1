@@ -320,6 +320,16 @@ enum SlicingEngine {
         return Int(count)
     }
 
+    /// Extracts the `unit` attribute from a 3MF file's `<model>` element.
+    /// Returns "millimeter" (the 3MF spec default) if not found.
+    static func threeMFUnit(atPath path: String) throws -> String {
+        guard let raw = path.withCString({ nsa1_get_3mf_unit($0) }) else {
+            return "millimeter"
+        }
+        defer { nsa1_free_string(raw) }
+        return String(cString: raw)
+    }
+
     /// Loads the first volume's mesh of the model object at `index` from a
     /// 3MF file, via the real engine's `load_3mf`.
     static func loadThreeMFMesh(atPath path: String, objectIndex index: Int) throws -> LoadedMesh {

@@ -167,6 +167,26 @@ extern "C" int64_t nsa1_3mf_object_count(const char *path) {
     }
     return static_cast<int64_t>(model.objects.size());
 }
+// Extract the `unit` attribute from a 3MF file's `<model>` element.
+// Returns "millimeter" (the 3MF spec default) if not found.
+extern "C" char *nsa1_get_3mf_unit(const char *path) {
+    std::ifstream file(path, std::ios::binary);
+    if (!file.is_open()) return strdup("millimeter");
+    std::string content((std::istreambuf_iterator<char>(file)), std::istreambuf_iterator<char>());
+    size_t modelPos = content.find("<model");
+    if (modelPos == std::string::npos) return strdup("millimeter");
+    size_t modelEnd = content.find(">", modelPos);
+    if (modelEnd == std::string::npos) return strdup("millimeter");
+    std::string modelTag = content.substr(modelPos, modelEnd - modelPos);
+    size_t unitPos = modelTag.find("unit=");
+    if (unitPos == std::string::npos) return strdup("millimeter");
+    size_t quoteStart = modelTag.find('"', unitPos + 5);
+    if (quoteStart == std::string::npos) return strdup("millimeter");
+    size_t quoteEnd = modelTag.find('"', quoteStart + 1);
+    if (quoteEnd == std::string::npos) return strdup("millimeter");
+    std::string unit = modelTag.substr(quoteStart + 1, quoteEnd - quoteStart - 1);
+    return strdup(unit.c_str());
+}
 
 extern "C" NSA1Mesh *nsa1_load_3mf_mesh(const char *path, int64_t object_index) {
     Slic3r::Model model;

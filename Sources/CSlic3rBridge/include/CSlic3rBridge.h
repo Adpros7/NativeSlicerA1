@@ -60,7 +60,10 @@ NSA1Mesh *nsa1_load_step_mesh(const char *path);
 
 /// Loads a 3MF file via libslic3r's `load_3mf` and returns the number of
 /// top-level model objects it contains, or -1 on failure.
-int64_t nsa1_3mf_object_count(const char *path);
+/// Extracts the `unit` attribute from a 3MF file's `<model>` element.
+/// Returns a newly allocated string (freed by `nsa1_free_string`);
+/// returns "millimeter" (the 3MF spec default) if not found.
+char *nsa1_get_3mf_unit(const char *path);
 
 /// Loads a 3MF file and returns the first volume's mesh of the model
 /// object at `object_index`, or NULL on failure/out-of-range index.
