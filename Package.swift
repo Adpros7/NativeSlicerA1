@@ -113,7 +113,10 @@ let package = Package(
                 .product(name: "CocoaMQTT", package: "CocoaMQTT"),
             ],
             path: "Sources/NativeSlicerA1",
-            resources: [.copy("Resources/Profiles")],
+            resources: [
+                .copy("Resources/Calibration"),
+                .copy("Resources/Profiles"),
+            ],
             linkerSettings: [
                 .unsafeFlags([
             "\(repoRoot)/vendor/BambuStudio/build/arm64/nsa1_bridge/libnsa1_libslic3r_leak_shim.a",

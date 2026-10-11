@@ -35,9 +35,14 @@ are complete. The connectivity-specific source audit is retained in
 `RESEARCH-P0-011-CONNECTIVITY.md`.
 
 ## Current task / progress
-No product-code task in progress. Commit/push the P3-001 documentation
-milestone, then begin P3-002 with the flow-rate workflow design and
-upstream-calibration resource/API verification.
+P3-002 design complete and stored in
+`docs/superpowers/plans/2026-10-11-calibration-workflows.md`. Task 1
+completed: five exact BambuStudio AGPLv3 calibration assets bundled
+(flow pass 1/2, temperature tower, retraction tower, volumetric-speed
+STEP), provenance retained in `Resources/Calibration/NOTICE.md`, lookup
+covered by a red→green XCTest, and the complete suite now has 44 passing
+tests. Next: Task 2, validated request/capability domain model; then the
+flow-rate bridge, before any other calibration workflow.
 
 ## Important technical decisions
 - **License**: AGPLv3 (RESEARCH.md P0-004) — required to reuse `libslic3r`.
@@ -127,29 +132,35 @@ upstream-calibration resource/API verification.
   hardware-verified against a real printer (see TODO.md P2-002/003/006).
 
 ## Uncommitted changes
-None after this session's commits.
+None after the P3-002 Task 1 resource-milestone commit.
 
 ## Known blockers
-None. Open follow-ups (not blocking, tracked in TODO.md):
-- P0-011 feature-parity matrix needs a file:line citation pass (currently
-  a 274-row draft without per-row sourcing).
-- THIRD_PARTY_LICENSES.md has a few "📋 public record, not re-verified"
-  rows (Boost, CGAL, OCCT, Assimp, OpenCV, TBB, NLopt, FreeType, GMP,
-  MPFR, curl, OpenSSL, expat, libjpeg-turbo, libpng, zlib, CocoaMQTT) —
-  verify against the exact vendored LICENSE files before any distribution
-  decision. CGAL's dual GPL/LGPL licensing specifically needs scoping to
-  the exact CGAL packages `libslic3r_cgal` links.
-- No hardware A1/AMS Lite available to this session — all printer-facing
-  code is protocol/documentation-level verified only.
-- P3-003's settings UI exposes 6 common overrides (layer height, walls,
-  infill, supports, nozzle/bed temp), not the full BambuStudio settings
-  surface (hundreds of options) — intentionally scoped to the explicitly
-  requested set; `SlicingJob.overridableKeys` is the single place to add
-  more.
+P3-002 has two verified engineering gates, not reasons to reduce scope:
+- Only pressure-advance has a public reusable `libslic3r` generator
+  (`CalibPressureAdvancePattern`); upstream flow/temp/retraction/max-flow
+  workflows are GUI orchestration around real resource models and config
+  ranges. The plan isolates that adaptation in a narrow C++ bridge helper;
+  never post-edit exported G-code as the primary implementation.
+- A1 profile files establish printer/nozzle/filament compatibility but do
+  not declare calibration-command firmware capabilities. Pressure advance
+  must be capability-gated until actual firmware evidence is supplied;
+  workflow generation is not silently omitted.
+- THIRD_PARTY_LICENSES.md still has a few "📋 public record, not
+  re-verified" rows (Boost, CGAL, OCCT, Assimp, OpenCV, TBB, NLopt,
+  FreeType, GMP, MPFR, curl, OpenSSL, expat, libjpeg-turbo, libpng,
+  zlib, CocoaMQTT) — verify against exact vendored LICENSE files before
+  any distribution decision. CGAL's dual GPL/LGPL licensing specifically
+  needs scoping to the exact CGAL packages `libslic3r_cgal` links.
+- No hardware A1/AMS Lite available: all printer-facing code remains
+  protocol/documentation-level verified only.
+- P3-003's settings UI intentionally exposes 6 common overrides, not the
+  full BambuStudio settings surface; `SlicingJob.overridableKeys` is the
+  extension point.
 
 ## Next recommended action
-- P3-001 (audited missing features) or P3-002 (calibration workflows) are
-  the next unblocked Phase 3 items.
+- Continue P3-002 Task 2 (request/capability validation) after committing
+  the verified calibration-resource milestone; implement flow-rate before
+  pressure advance, temperature, retraction, then max volumetric speed.
 - P2-004/P2-007/P2-008 need real hardware, not available this session; the
   upload protocol (P2-004, likely FTP-over-TLS per RESEARCH-P0-007.md)
   could still be implemented and tested against a local server, the same

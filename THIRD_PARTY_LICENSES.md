@@ -22,6 +22,8 @@ any component below is *more* restrictive than AGPLv3 permits combining
 |---|---|---|---|
 | BambuStudio / `libslic3r` | AGPLv3 | `v02.08.04.61` (`f5e51a2`) | ✅ checked (`LICENSE` file in repo root) |
 
+| BambuStudio calibration test models | AGPLv3 | `v02.08.04.61` (`f5e51a2`) | ✅ checked (`.research/BambuStudio/LICENSE`; exact unmodified asset paths and provenance in `Sources/NativeSlicerA1/Resources/Calibration/NOTICE.md`) |
+
 ## Vendored under `vendor/BambuStudio/src/` (bundled source, compiled by us)
 
 | Component | License | Verification |
