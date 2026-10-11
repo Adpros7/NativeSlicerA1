@@ -22,6 +22,7 @@ P4-001: `nsa1_get_3mf_unit` C-ABI extracts the `unit` attribute from 3MF files (
 P3-002 complete: all 5 calibration workflows (flow-rate, pressure-advance,
 temperature, retraction, max-volumetric-speed) implemented end-to-end.
 P4-004: C API (`nsa1_cut_model`) + Swift wrapper (`SlicingEngine.cutModel`) for model splitting along user-specified planes. Returns 0, 1, or 2 sliced `LoadedMesh` objects. C++ uses upstream `Slic3r::ModelObject::cut()`. Swift wrapper accepts `(vertices, indices, matrix)` tuples. Full suite: 76 tests passing.
+P4-010: `nsa1_auto_orient` C-ABI runs upstream `Slic3r::orientation::orient()` on a mesh, returns optimal rotation matrix (column-major 4x4) minimizing overhang. Swift wrapper `SlicingEngine.autoOrientMesh()`. Full suite: 76 tests passing.
 P1-010 (STL/OBJ/STEP import/export) and P1-011 (print-time/filament
 estimation) complete. P1-012 (view-mode coloring) complete.
 
