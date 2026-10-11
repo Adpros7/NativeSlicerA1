@@ -2,38 +2,42 @@
 
 ## Current phase
 Phase 1 (Application Foundation) and Phase 2's non-hardware items complete.
-Phase 3 (Feature Parity): P3-003 (advanced slicing settings) complete.
-Phase 9: P9-007 (macOS deployment-target/zstd fix) complete this session.
-Next unblocked: P3-001 (audited feature-parity), P3-002 (calibration
-workflows), or Phase 2's hardware-adjacent P2-004/P2-007/P2-008 (not
-hardware-verifiable this session).
+Phase 3: P3-001 (source-cited feature-parity audit) complete this session;
+P3-002 (calibration workflows) is next. Phase 9 P9-007 (macOS
+deployment-target/zstd fix) is complete and pushed in `dc2fc9c`.
 
 ## Last completed task
-P9-007: Fixed the macOS deployment-target/zstd linker warning
-("building for macOS-14.0, but linking with dylib
-'/opt/homebrew/opt/zstd/lib/libzstd.1.dylib' which was built for newer
-version 26.0"). Root cause: `Package.swift` hardcoded a link against
-Homebrew's zstd dylib — the one dependency, out of ~25, not built
-project-locally against this project's `CMAKE_OSX_DEPLOYMENT_TARGET=14.0`
-(pulled in transitively by Boost::iostreams' optional zstd filter and
-Blosc/OpenVDB's zstd codec). Fix: `Scripts/build-libslic3r.sh` now builds
-zstd 1.5.7 itself as a static-only, project-local CMake `ExternalProject`
-(pinned tarball + SHA-256), wired as an explicit dependency of Boost and
-Blosc so it's always resolved first via the standard
-`BambuStudio_deps/usr/local` prefix; `Package.swift` links the resulting
-`libzstd.a` instead of the Homebrew dylib, and the now-dead
-`/opt/homebrew/lib` rpath flag was removed. Full root-cause/fix writeup
-in ARCHITECTURE.md P9-007 (including why Boost's own zstd filter ends up
-compiled out as a deterministic, harmless side effect — unused by
-libslic3r regardless). Verified: clean `swift build` has zero
-zstd/deployment warnings; `otool -l` on the built binary shows
-`LC_BUILD_VERSION minos 14.0 sdk 14.0`; `otool -L` shows zero
-`/opt/homebrew` (or any non-`/usr/lib`, non-`/System/Library`) dylibs;
-`swift test` — all 43 tests still pass. Committed and pushed.
+P3-001: Replaced the former unsourced 274-row P0-011 draft with a
+source-cited parity audit (`FEATURE_PARITY.md`) against the exact upstream
+pins this project uses: BambuStudio `v02.08.04.61` (`f5e51a2`) and
+OrcaSlicer `v2.4.2` (`8500fcd`). Six independent source-research passes
+covered all user-requested categories: import/export, transforms,
+cut/connectors, orientation/arrangement, supports/modifiers/multi-plate,
+settings/advanced slicing, multicolor/AMS/purge/sequential printing,
+G-code/viewer, calibration, connectivity/monitoring/camera, MakerWorld,
+persistence/compatibility, error recovery, performance, and accessibility.
+Every documented upstream claim is backed by a file:line citation in the
+pinned local source, with closed-source Bambu networking/plugin behavior
+explicitly marked as unavailable instead of fabricated. The audit
+corrected false binary "unsupported" claims where P3-003's complete
+profile closure already reaches the real engine (e.g. supports, ironing,
+Arachne, contour compensation) but UI overrides are absent. It also
+protected the explicitly requested calibration scope: all five workflows
+(flow, pressure advance, temperature, retraction, max volumetric speed)
+remain P3-002 work in the requested order; PA generation is gated on
+actual printer/firmware compatibility rather than silently dropped.
+
+`TODO.md` now records independently implementable tasks with sources and
+tests: format I/O + estimates/view modes (P1-010..012), detailed
+calibration acceptance criteria, cut/connector/arrange support work
+(P4-004..014), and MakerWorld's proprietary-auth risk. P0-011/P3-001/P3-007
+are complete. The connectivity-specific source audit is retained in
+`RESEARCH-P0-011-CONNECTIVITY.md`.
 
 ## Current task / progress
-No task in progress. Next: P3-001 (feature-parity audit against upstream
-BambuStudio/OrcaSlicer source) or P3-002 (calibration workflows).
+No product-code task in progress. Commit/push the P3-001 documentation
+milestone, then begin P3-002 with the flow-rate workflow design and
+upstream-calibration resource/API verification.
 
 ## Important technical decisions
 - **License**: AGPLv3 (RESEARCH.md P0-004) — required to reuse `libslic3r`.
