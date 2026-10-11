@@ -449,6 +449,11 @@ extern "C" int nsa1_slice_to_gcode(
                     seg.end_z = move.position.z();
                     seg.width = move.width;
                     seg.height = move.height;
+                    seg.feedrate = move.feedrate;
+                    seg.temperature = move.temperature;
+                    seg.layer_duration = move.layer_duration;
+                    seg.extruder_id = move.extruder_id;
+                    seg.extrusion_role = static_cast<float>(move.extrusion_role);
                     seg.is_travel = is_travel ? 1 : 0;
                     segments.push_back(seg);
                 }

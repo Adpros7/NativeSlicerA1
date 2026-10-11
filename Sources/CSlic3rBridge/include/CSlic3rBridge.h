@@ -120,10 +120,18 @@ void nsa1_free_config_entries(NSA1ConfigEntry *entries, size_t count);
 /// (the same per-move data BambuStudio's own G-code preview consumes):
 /// a straight line from `(start_x,start_y,start_z)` to `(end_x,end_y,end_z)`,
 /// `is_travel` true for non-extruding (travel) moves, `width`/`height` the
-/// extrusion cross-section in mm (0 for travel moves).
 typedef struct {
-    float start_x, start_y, start_z;
-    float end_x, end_y, end_z;
+    float start_x;
+    float start_y;
+    float start_z;
+    float end_x;
+    float end_y;
+    float end_z;
+    float feedrate;
+    float temperature;
+    float layer_duration;
+    float extruder_id;
+    float extrusion_role;
     float width;
     float height;
     uint8_t is_travel;
