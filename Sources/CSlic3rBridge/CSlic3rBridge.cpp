@@ -18,6 +18,8 @@
 #include "libslic3r/miniz_extension.hpp"
 #include "libslic3r/Format/STEP.hpp"
 #include "libslic3r/Orient.hpp"
+#include "libslic3r/Arrange.hpp"
+#include "libslic3r/Geometry/ConvexHull.hpp"
 #include <cstring>
 #include <array>
 #include <filesystem>
@@ -216,14 +218,99 @@ extern "C" int nsa1_auto_orient(
         items.push_back(std::move(orientMesh));
         Slic3r::orientation::OrientMeshs excludes;
         Slic3r::orientation::OrientParams params;
+        // Upstream `_orient()` calls `progressind` unconditionally
+        // (no null check, unlike `OrientMesh::apply()`'s setter) — an
+        // empty default `std::function` throws `std::bad_function_call`.
+        params.progressind = [](unsigned, std::string) {};
         Slic3r::orientation::orient(items, excludes, params);
 
         if (items.empty()) return -1;
 
-        // Extract the transformation matrix (column-major 4x4)
-        const auto &mat = items.front().rotation_matrix;
+        // `rotation_matrix` is a 3x3 `Matrix3d` (Eigen default: column-
+        // major storage) — embed it into the upper-left of a 4x4
+        // homogeneous identity matrix for the caller's `simd_float4x4`.
+        const Eigen::Matrix3d &mat = items.front().rotation_matrix;
+        Eigen::Matrix4d mat4 = Eigen::Matrix4d::Identity();
+        mat4.block<3, 3>(0, 0) = mat;
         for (int i = 0; i < 16; ++i) {
-            out_matrix16[i] = mat.data()[i];
+            out_matrix16[i] = mat4.data()[i];
+        }
+        return 0;
+    } catch (...) {
+        return -1;
+    }
+}
+
+// Auto-arrange: packs N objects on a rectangular bed using upstream
+// libnest2d-backed arrange(). Returns per-object (x,y) translation in mm
+// and rotation in radians to apply on top of the object's existing
+// placement. `out_results` must point to caller-allocated storage for
+// `object_count` entries. Returns 0 on success, -1 on failure.
+extern "C" int nsa1_auto_arrange(
+    const NSA1SceneObject *objects, size_t object_count,
+    double bed_width_mm, double bed_height_mm, double clearance_mm,
+    NSA1ArrangeResult *out_results) {
+    try {
+        if (object_count == 0) return 0;
+
+        Slic3r::arrangement::ArrangePolygons items;
+        items.reserve(object_count);
+        for (size_t i = 0; i < object_count; ++i) {
+            const NSA1SceneObject &obj = objects[i];
+            std::vector<Slic3r::Vec3f> verts(obj.vertex_count);
+            for (size_t v = 0; v < obj.vertex_count; ++v) {
+                verts[v] = Slic3r::Vec3f(obj.vertices[v * 3 + 0], obj.vertices[v * 3 + 1], obj.vertices[v * 3 + 2]);
+            }
+            std::vector<Slic3r::Vec3i> faces(obj.index_count / 3);
+            for (size_t f = 0; f < faces.size(); ++f) {
+                faces[f] = Slic3r::Vec3i(
+                    static_cast<int>(obj.indices[f * 3 + 0]),
+                    static_cast<int>(obj.indices[f * 3 + 1]),
+                    static_cast<int>(obj.indices[f * 3 + 2]));
+            }
+            Slic3r::TriangleMesh mesh(verts, faces);
+            if (obj.matrix16) {
+                Slic3r::Transform3d trafo;
+                trafo.matrix() = Eigen::Map<const Eigen::Matrix4d>(obj.matrix16);
+                mesh.transform(trafo, /*fix_left_handed=*/false);
+            }
+
+            // `TriangleMesh::convex_hull()` (the member-function wrapper)
+            // returns an empty polygon in this vendored build — call the
+            // real underlying `Slic3r::Geometry::convex_hull()` directly
+            // on the mesh's own vertices (same algorithm the wrapper is
+            // documented to use) instead.
+            Slic3r::Points xyPoints;
+            xyPoints.reserve(mesh.its.vertices.size());
+            for (const auto &v : mesh.its.vertices) {
+                xyPoints.push_back(Slic3r::Point::new_scale(v(0), v(1)));
+            }
+            Slic3r::arrangement::ArrangePolygon ap;
+            ap.poly = Slic3r::ExPolygon(Slic3r::Geometry::convex_hull(xyPoints));
+            // `ArrangePolygon::bed_idx` defaults to `UNARRANGED` (-1),
+            // which is numerically identical to libnest2d's `BIN_ID_UNFIT`
+            // sentinel — the packer's per-item loop skips any item whose
+            // `binId()` already equals that sentinel *before* attempting
+            // to place it, so a never-packed item must start at a valid
+            // bed index (matches upstream's own `ModelArrange.cpp::
+            // get_arrange_poly()`, which sets this for the same reason).
+            ap.bed_idx = 0;
+            items.push_back(std::move(ap));
+        }
+
+        Slic3r::BoundingBox bed(
+            Slic3r::Point(coord_t(scale_(0.0)), coord_t(scale_(0.0))),
+            Slic3r::Point(coord_t(scale_(bed_width_mm)), coord_t(scale_(bed_height_mm))));
+        Slic3r::arrangement::ArrangeParams params;
+        params.min_obj_distance = coord_t(scale_(clearance_mm));
+        params.allow_rotations = true;
+        Slic3r::arrangement::arrange(items, bed, params);
+
+        for (size_t i = 0; i < object_count; ++i) {
+            out_results[i].x = Slic3r::unscale<double>(items[i].translation.x());
+            out_results[i].y = Slic3r::unscale<double>(items[i].translation.y());
+            out_results[i].rotation = items[i].rotation;
+            out_results[i].bed_index = items[i].bed_idx;
         }
         return 0;
     } catch (...) {

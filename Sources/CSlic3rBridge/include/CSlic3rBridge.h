@@ -91,6 +91,29 @@ typedef struct {
     const double *matrix16;
 } NSA1SceneObject;
 
+/// Result of auto-arranging one object (P4-011): translation in mm to
+/// apply on top of the object's existing XY placement, rotation in
+/// radians, and the logical bed index (0 = the physical bed; the real
+/// engine's `arrange()` assigns >0 only if objects don't fit together).
+typedef struct {
+    double x;
+    double y;
+    double rotation;
+    int32_t bed_index;
+} NSA1ArrangeResult;
+
+/// Auto-arranges `object_count` objects on a `bed_width_mm` x
+/// `bed_height_mm` rectangular bed via the real engine's libnest2d-backed
+/// `Slic3r::arrange()`, using each object's real 2D convex hull (not a
+/// bounding-box approximation) as its packing silhouette. `clearance_mm`
+/// is the minimum required gap between any two objects. `out_results`
+/// must point to caller-allocated storage for `object_count` entries.
+/// Returns 0 on success, -1 on failure.
+int nsa1_auto_arrange(
+    const NSA1SceneObject *objects, size_t object_count,
+    double bed_width_mm, double bed_height_mm, double clearance_mm,
+    NSA1ArrangeResult *out_results);
+
 /// One `key = value` config entry, already serialized to libslic3r's own
 /// config string format (the same format `BambuProfileLoader`'s resolved
 /// JSON fields use: scalars as-is, arrays joined with `,` — matching

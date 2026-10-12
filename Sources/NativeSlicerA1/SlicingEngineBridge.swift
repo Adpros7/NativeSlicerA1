@@ -355,6 +355,58 @@ enum SlicingEngine {
         return simd_float4x4([m0, m1, m2, m3])
     }
 
+    /// Auto-arranges objects on a rectangular bed (P4-011), via the real
+    /// engine's libnest2d-backed `Slic3r::arrangement::arrange()` using
+    /// each mesh's real 2D convex hull as its packing silhouette. Returns
+    /// per-object (x, y) translation in mm and rotation in radians to
+    /// apply on top of each object's existing XY placement, in input order.
+    static func autoArrange(
+        meshes: [(vertices: [Float], indices: [UInt32], matrix: simd_float4x4)],
+        bedWidth: Double,
+        bedHeight: Double,
+        clearance: Double
+    ) throws -> [(x: Double, y: Double, rotation: Double, bedIndex: Int)] {
+        guard !meshes.isEmpty else { return [] }
+
+        var sceneObjects: [NSA1SceneObject] = []
+        var matrixPointers: [UnsafeMutablePointer<Double>] = []
+        defer { for p in matrixPointers { p.deallocate() } }
+        for meshData in meshes {
+            let mbuf = flatten(meshData.matrix)
+            let matrixPtr = UnsafeMutablePointer<Double>.allocate(capacity: 16)
+            matrixPtr.initialize(from: mbuf, count: 16)
+            matrixPointers.append(matrixPtr)
+            sceneObjects.append(NSA1SceneObject(
+                vertices: UnsafePointer(meshData.vertices),
+                vertex_count: meshData.vertices.count / 3,
+                indices: UnsafePointer(meshData.indices),
+                index_count: meshData.indices.count,
+                matrix16: UnsafePointer(matrixPtr)
+            ))
+        }
+
+        var results = [NSA1ArrangeResult](
+            repeating: NSA1ArrangeResult(x: 0, y: 0, rotation: 0, bed_index: 0),
+            count: sceneObjects.count
+        )
+        let status = sceneObjects.withUnsafeBufferPointer { objBuf in
+            results.withUnsafeMutableBufferPointer { resBuf in
+                nsa1_auto_arrange(
+                    objBuf.baseAddress,
+                    objBuf.count,
+                    bedWidth,
+                    bedHeight,
+                    clearance,
+                    resBuf.baseAddress
+                )
+            }
+        }
+        guard status == 0 else {
+            throw SlicingEngineError.sliceFailed("auto-arrange failed")
+        }
+        return results.map { (x: $0.x, y: $0.y, rotation: $0.rotation, bedIndex: Int($0.bed_index)) }
+    }
+
     /// Loads the first volume's mesh of the model object at `index` from a
     /// 3MF file, via the real engine's `load_3mf`.
     static func loadThreeMFMesh(atPath path: String, objectIndex index: Int) throws -> LoadedMesh {
@@ -671,15 +723,19 @@ enum SlicingEngine {
 
         // Build scene objects from the input meshes
         var sceneObjects: [NSA1SceneObject] = []
+        var matrixPointers: [UnsafeMutablePointer<Double>] = []
+        defer { for p in matrixPointers { p.deallocate() } }
         for meshData in meshes {
-            let matrix = meshData.matrix
-            let mbuf = flatten(matrix)
+            let mbuf = flatten(meshData.matrix)
+            let matrixPtr = UnsafeMutablePointer<Double>.allocate(capacity: 16)
+            matrixPtr.initialize(from: mbuf, count: 16)
+            matrixPointers.append(matrixPtr)
             sceneObjects.append(NSA1SceneObject(
                 vertices: UnsafePointer(meshData.vertices),
-                vertex_count: meshData.vertices.count,
+                vertex_count: meshData.vertices.count / 3,
                 indices: UnsafePointer(meshData.indices),
                 index_count: meshData.indices.count,
-                matrix16: mbuf
+                matrix16: UnsafePointer(matrixPtr)
             ))
         }
 
