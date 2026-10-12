@@ -20,6 +20,7 @@
 #include "libslic3r/Orient.hpp"
 #include "libslic3r/Arrange.hpp"
 #include "libslic3r/Geometry/ConvexHull.hpp"
+#include "libslic3r/TriangleSelector.hpp"
 #include <cstring>
 #include <array>
 #include <filesystem>
@@ -318,6 +319,152 @@ extern "C" int nsa1_auto_arrange(
     }
 }
 
+// P3-005 support painting: wraps the real engine's TriangleSelector.
+// The mesh is owned by the handle (TriangleSelector only stores a
+// reference to it, so it must outlive the selector).
+struct NSA1PaintState {
+    Slic3r::TriangleMesh mesh;
+    Slic3r::TriangleSelector selector;
+    explicit NSA1PaintState(Slic3r::TriangleMesh m) : mesh(std::move(m)), selector(mesh) {}
+};
+
+extern "C" NSA1PaintState *nsa1_paint_create(
+    const float *vertices, size_t vertex_count,
+    const uint32_t *indices, size_t index_count) {
+    try {
+        std::vector<Slic3r::Vec3f> verts(vertex_count);
+        for (size_t v = 0; v < vertex_count; ++v) {
+            verts[v] = Slic3r::Vec3f(vertices[v * 3 + 0], vertices[v * 3 + 1], vertices[v * 3 + 2]);
+        }
+        std::vector<Slic3r::Vec3i> faces(index_count / 3);
+        for (size_t f = 0; f < faces.size(); ++f) {
+            faces[f] = Slic3r::Vec3i(
+                static_cast<int>(indices[f * 3 + 0]),
+                static_cast<int>(indices[f * 3 + 1]),
+                static_cast<int>(indices[f * 3 + 2]));
+        }
+        return new NSA1PaintState(Slic3r::TriangleMesh(verts, faces));
+    } catch (...) {
+        return nullptr;
+    }
+}
+
+extern "C" void nsa1_paint_sphere(
+    NSA1PaintState *state,
+    double center_x, double center_y, double center_z, double radius,
+    int enforcer_blocker) {
+    if (state == nullptr) return;
+    try {
+        Slic3r::EnforcerBlockerType new_state =
+            enforcer_blocker == 1 ? Slic3r::EnforcerBlockerType::ENFORCER :
+            enforcer_blocker == 2 ? Slic3r::EnforcerBlockerType::BLOCKER :
+            Slic3r::EnforcerBlockerType::NONE;
+
+        Slic3r::Vec3f center{float(center_x), float(center_y), float(center_z)};
+        // Find the facet whose centroid is nearest the brush center, to
+        // seed select_patch()'s flood-fill/subdivision (matches upstream
+        // GUI painting gizmos, which seed from a camera ray-mesh hit;
+        // here the hit is already supplied by the caller's own ray cast).
+        const auto &its = state->mesh.its;
+        int best_facet = -1;
+        float best_dist_sqr = std::numeric_limits<float>::max();
+        for (size_t f = 0; f < its.indices.size(); ++f) {
+            const auto &tri = its.indices[f];
+            Slic3r::Vec3f centroid = (its.vertices[tri(0)] + its.vertices[tri(1)] + its.vertices[tri(2)]) / 3.f;
+            float d = (centroid - center).squaredNorm();
+            if (d < best_dist_sqr) {
+                best_dist_sqr = d;
+                best_facet = static_cast<int>(f);
+            }
+        }
+        if (best_facet < 0) return;
+
+        // Camera position only affects Circle's (2D) back-face visibility
+        // test; Sphere::is_facet_visible always returns true, so any
+        // dummy value is fine for this 3D brush.
+        Slic3r::Vec3f dummy_camera(0.f, 0.f, 1.f);
+        Slic3r::TriangleSelector::ClippingPlane no_clip;
+        auto cursor = Slic3r::TriangleSelector::SinglePointCursor::cursor_factory(
+            center, dummy_camera, float(radius),
+            Slic3r::TriangleSelector::CursorType::SPHERE,
+            Slic3r::Transform3d::Identity(), no_clip);
+
+        state->selector.select_patch(
+            best_facet, std::move(cursor), new_state,
+            Slic3r::Transform3d::Identity(), /*triangle_splitting=*/true);
+    } catch (...) {
+        // Painting is a best-effort interactive operation; swallow and
+        // leave the selector in its last valid state.
+    }
+}
+
+extern "C" void nsa1_paint_serialize(NSA1PaintState *state, uint8_t **out_data, size_t *out_size) {
+    *out_data = nullptr;
+    *out_size = 0;
+    if (state == nullptr) return;
+    try {
+        auto [pairs, bits] = state->selector.serialize();
+        size_t bit_bytes = (bits.size() + 7) / 8;
+        size_t total = sizeof(uint32_t) + pairs.size() * 2 * sizeof(int32_t) + sizeof(uint32_t) + bit_bytes;
+        auto *buf = new uint8_t[total];
+        size_t off = 0;
+        uint32_t num_pairs = static_cast<uint32_t>(pairs.size());
+        std::memcpy(buf + off, &num_pairs, sizeof(num_pairs)); off += sizeof(num_pairs);
+        for (const auto &p : pairs) {
+            int32_t a = p.first, b = p.second;
+            std::memcpy(buf + off, &a, sizeof(a)); off += sizeof(a);
+            std::memcpy(buf + off, &b, sizeof(b)); off += sizeof(b);
+        }
+        uint32_t num_bits = static_cast<uint32_t>(bits.size());
+        std::memcpy(buf + off, &num_bits, sizeof(num_bits)); off += sizeof(num_bits);
+        std::fill(buf + off, buf + off + bit_bytes, 0);
+        for (size_t i = 0; i < bits.size(); ++i) {
+            if (bits[i]) buf[off + i / 8] |= uint8_t(1u << (i % 8));
+        }
+        *out_data = buf;
+        *out_size = total;
+    } catch (...) {
+        *out_data = nullptr;
+        *out_size = 0;
+    }
+}
+
+extern "C" void nsa1_paint_data_free(uint8_t *data) {
+    delete[] data;
+}
+
+extern "C" void nsa1_paint_free(NSA1PaintState *state) {
+    delete state;
+}
+
+// Shared by build_model_from_objects: decodes the wire format written by
+// nsa1_paint_serialize back into TriangleSelector's own pair<...> format.
+std::pair<std::vector<std::pair<int, int>>, std::vector<bool>> decode_paint_data(
+    const uint8_t *data, size_t size) {
+    std::pair<std::vector<std::pair<int, int>>, std::vector<bool>> result;
+    if (data == nullptr || size < sizeof(uint32_t)) return result;
+    size_t off = 0;
+    uint32_t num_pairs;
+    std::memcpy(&num_pairs, data + off, sizeof(num_pairs)); off += sizeof(num_pairs);
+    result.first.reserve(num_pairs);
+    for (uint32_t i = 0; i < num_pairs && off + 2 * sizeof(int32_t) <= size; ++i) {
+        int32_t a, b;
+        std::memcpy(&a, data + off, sizeof(a)); off += sizeof(a);
+        std::memcpy(&b, data + off, sizeof(b)); off += sizeof(b);
+        result.first.emplace_back(a, b);
+    }
+    if (off + sizeof(uint32_t) > size) return result;
+    uint32_t num_bits;
+    std::memcpy(&num_bits, data + off, sizeof(num_bits)); off += sizeof(num_bits);
+    result.second.resize(num_bits);
+    for (uint32_t i = 0; i < num_bits; ++i) {
+        size_t byte_idx = off + i / 8;
+        if (byte_idx >= size) break;
+        result.second[i] = (data[byte_idx] >> (i % 8)) & 1;
+    }
+    return result;
+}
+
 extern "C" NSA1Mesh *nsa1_load_3mf_mesh(const char *path, int64_t object_index) {
     Slic3r::Model model;
     if (!load_3mf_model(path, model)) {
@@ -485,6 +632,18 @@ Slic3r::Model build_model_from_objects(const NSA1SceneObject *objects, size_t ob
 
         Slic3r::ModelObject *model_object = model.add_object();
         model_object->add_volume(std::move(mesh), Slic3r::ModelVolumeType::MODEL_PART, /*modify_to_center_geometry=*/false);
+        if (obj.paint_data != nullptr && obj.paint_data_size > 0) {
+            // P3-005: real support painting — deserialize into a
+            // TriangleSelector built on the volume's own (already-added)
+            // mesh, then attach it the same way upstream's GUI does, so
+            // the real engine's support generation (which reads
+            // ModelVolume::supported_facets, not a reimplementation)
+            // respects the painted enforcer/blocker regions.
+            Slic3r::ModelVolume *volume = model_object->volumes.back();
+            Slic3r::TriangleSelector selector(volume->mesh());
+            selector.deserialize(decode_paint_data(obj.paint_data, obj.paint_data_size));
+            volume->supported_facets.set(selector);
+        }
         Slic3r::ModelInstance *instance = model_object->add_instance();
         Slic3r::Transform3d trafo;
         trafo.matrix() = Eigen::Map<const Eigen::Matrix4d>(obj.matrix16);

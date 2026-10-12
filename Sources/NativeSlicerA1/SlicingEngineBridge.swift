@@ -45,9 +45,15 @@ struct ToolpathSegment {
     let layerDuration: Float
     /// Extruder ID (0-based index).
     let extruderID: Int32
-    /// Extrusion role: 0=perimeter, 1=inner-perimeter, 2=outer-perimeter,
-    /// 3=infill, 4=support, 5=bridge, 6=fill-skin, 7=skirt, 8=brim,
-    /// 9=support-interface, 10=skirt-loop (upstream `ExtrusionRole` enum).
+    /// Extrusion role: raw upstream `ExtrusionRole` enum value — 0=None,
+    /// 1=Perimeter, 2=ExternalPerimeter, 3=OverhangPerimeter,
+    /// 4=InternalInfill, 5=SolidInfill, 6=FloatingVerticalShell,
+    /// 7=TopSolidInfill, 8=BottomSurface, 9=Ironing, 10=BridgeInfill,
+    /// 11=GapFill, 12=Skirt, 13=Brim, 14=SupportMaterial,
+    /// 15=SupportMaterialInterface, 16=SupportTransition,
+    /// 17=SupportIroning, 18=WipeTower, 19=Custom, 20=Flush, 21=Mixed
+    /// (`ExtrusionEntity.hpp`'s `ExtrusionRole`; `CSlic3rBridge.cpp`
+    /// casts the raw enum value directly, no remapping).
     let extrusionRole: Float
 
     /// Computes a color for this segment based on the given view mode.
@@ -71,19 +77,35 @@ struct ToolpathSegment {
     }
 
     private func extrusionRoleColor() -> SIMD3<Float> {
-        // Discrete colors per upstream `Extrusion_Role_Colors`.
-        switch Int(extrusionRole) {
-        case 0: return SIMD3(0.95, 0.55, 0.15)  // perimeter (orange)
-        case 1: return SIMD3(0.85, 0.45, 0.10)  // inner-perimeter
-        case 2: return SIMD3(1.0, 0.65, 0.20)   // outer-perimeter
-        case 3: return SIMD3(0.4, 0.7, 0.3)     // infill (green)
-        case 4: return SIMD3(0.3, 0.5, 0.9)     // support (blue)
-        case 5: return SIMD3(0.6, 0.8, 0.5)     // bridge
-        case 6: return SIMD3(0.7, 0.6, 0.4)     // fill-skin
-        case 7, 8: return SIMD3(0.6, 0.6, 0.6)  // skirt/brim (gray)
-        case 9: return SIMD3(0.5, 0.4, 0.8)     // support-interface
-        default: return SIMD3(0.6, 0.6, 0.6)    // unknown → gray
-        }
+        // Exact upstream `BaseRenderer::Extrusion_Role_Colors` table
+        // (`GCodeRenderer/BaseRenderer.cpp`), indexed by the raw
+        // `ExtrusionRole` enum value (see `extrusionRole`'s doc comment).
+        let colors: [SIMD3<Float>] = [
+            SIMD3(0.90, 0.70, 0.70), // erNone
+            SIMD3(1.00, 0.90, 0.30), // erPerimeter
+            SIMD3(1.00, 0.49, 0.22), // erExternalPerimeter
+            SIMD3(0.12, 0.12, 1.00), // erOverhangPerimeter
+            SIMD3(0.69, 0.19, 0.16), // erInternalInfill
+            SIMD3(0.59, 0.33, 0.80), // erSolidInfill
+            SIMD3(0.90, 0.70, 0.70), // erFloatingVerticalShell
+            SIMD3(0.94, 0.25, 0.25), // erTopSolidInfill
+            SIMD3(0.40, 0.36, 0.78), // erBottomSurface
+            SIMD3(1.00, 0.55, 0.41), // erIroning
+            SIMD3(0.30, 0.50, 0.73), // erBridgeInfill
+            SIMD3(1.00, 1.00, 1.00), // erGapFill
+            SIMD3(0.00, 0.53, 0.43), // erSkirt
+            SIMD3(0.00, 0.23, 0.43), // erBrim
+            SIMD3(0.00, 1.00, 0.00), // erSupportMaterial
+            SIMD3(0.00, 0.50, 0.00), // erSupportMaterialInterface
+            SIMD3(0.00, 0.25, 0.00), // erSupportTransition
+            SIMD3(0.60, 1.00, 0.60), // erSupportIroning
+            SIMD3(0.70, 0.89, 0.67), // erWipeTower
+            SIMD3(0.37, 0.82, 0.58), // erCustom
+            SIMD3(0.85, 0.65, 0.95), // erFlush
+        ]
+        let index = Int(extrusionRole)
+        guard index >= 0, index < colors.count else { return SIMD3(0.6, 0.6, 0.6) }
+        return colors[index]
     }
 
     private func toolColor() -> SIMD3<Float> {
@@ -179,12 +201,15 @@ private struct PendingSceneObject {
     let vertices: [Float]
     let indices: [UInt32]
     let matrix16: [Double]
+    var paintData: [UInt8] = []
 }
 
-/// Recursively pins each object's vertex/index/matrix arrays with nested
-/// `withUnsafeBufferPointer` scopes so the flat `NSA1SceneObject` array
-/// handed to `body` stays valid for the whole call — the C function never
-/// outlives this stack frame, so no manual lifetime management is needed.
+/// Recursively pins each object's vertex/index/matrix/paint arrays with
+/// nested `withUnsafeBufferPointer` scopes so the flat `NSA1SceneObject`
+/// array handed to `body` stays valid for the whole call — the C
+/// function never outlives this stack frame, so no manual lifetime
+/// management is needed. An empty `paintData` yields a NULL
+/// `paint_data` pointer (unpainted object).
 private func withNSA1SceneObjects<R>(_ pending: [PendingSceneObject], _ body: (UnsafePointer<NSA1SceneObject>?, Int) -> R) -> R {
     func build(_ index: Int, _ acc: inout [NSA1SceneObject]) -> R {
         guard index < pending.count else {
@@ -194,8 +219,15 @@ private func withNSA1SceneObjects<R>(_ pending: [PendingSceneObject], _ body: (U
         return object.vertices.withUnsafeBufferPointer { vbuf in
             object.indices.withUnsafeBufferPointer { ibuf in
                 object.matrix16.withUnsafeBufferPointer { mbuf in
-                    acc.append(NSA1SceneObject(vertices: vbuf.baseAddress, vertex_count: vbuf.count / 3, indices: ibuf.baseAddress, index_count: ibuf.count, matrix16: mbuf.baseAddress))
-                    return build(index + 1, &acc)
+                    object.paintData.withUnsafeBufferPointer { pbuf in
+                        acc.append(NSA1SceneObject(
+                            vertices: vbuf.baseAddress, vertex_count: vbuf.count / 3,
+                            indices: ibuf.baseAddress, index_count: ibuf.count,
+                            matrix16: mbuf.baseAddress,
+                            paint_data: pbuf.baseAddress, paint_data_size: pbuf.count
+                        ))
+                        return build(index + 1, &acc)
+                    }
                 }
             }
         }
@@ -381,7 +413,8 @@ enum SlicingEngine {
                 vertex_count: meshData.vertices.count / 3,
                 indices: UnsafePointer(meshData.indices),
                 index_count: meshData.indices.count,
-                matrix16: UnsafePointer(matrixPtr)
+                matrix16: UnsafePointer(matrixPtr),
+                paint_data: nil, paint_data_size: 0
             ))
         }
 
@@ -466,15 +499,24 @@ enum SlicingEngine {
     /// `outputPath` via the real engine's `Print::apply`/`validate`/
     /// `process`/`export_gcode` pipeline (P1-008). Returns the real
     /// per-move toolpath the engine computed while writing that G-code
-    /// (P1-009), for viewport preview.
+    /// (P1-009), for viewport preview. `paintData[i]` (P3-005, from
+    /// `SupportPaintState.serialize()`) is each object's real
+    /// enforcer/blocker support-paint state, positionally aligned with
+    /// `objects`; an empty array or a shorter `paintData` than `objects`
+    /// means that object is unpainted.
     @discardableResult
     static func sliceToGCode(
         objects: [(mesh: LoadedMesh, transform: simd_float4x4)],
         configEntries: [(key: String, value: String)],
-        outputPath: String
+        outputPath: String,
+        paintData: [[UInt8]] = []
     ) throws -> [ToolpathSegment] {
-        let pendingObjects = objects.map {
-            PendingSceneObject(vertices: $0.mesh.vertices, indices: $0.mesh.indices, matrix16: flatten($0.transform))
+        let pendingObjects = objects.enumerated().map { index, object in
+            PendingSceneObject(
+                vertices: object.mesh.vertices, indices: object.mesh.indices,
+                matrix16: flatten(object.transform),
+                paintData: index < paintData.count ? paintData[index] : []
+            )
         }
         var errorMessage: String?
         var toolpath: [ToolpathSegment] = []
@@ -735,7 +777,8 @@ enum SlicingEngine {
                 vertex_count: meshData.vertices.count / 3,
                 indices: UnsafePointer(meshData.indices),
                 index_count: meshData.indices.count,
-                matrix16: UnsafePointer(matrixPtr)
+                matrix16: UnsafePointer(matrixPtr),
+                paint_data: nil, paint_data_size: 0
             ))
         }
 

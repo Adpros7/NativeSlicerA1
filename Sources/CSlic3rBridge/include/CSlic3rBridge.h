@@ -89,6 +89,10 @@ typedef struct {
     const uint32_t *indices;
     size_t index_count;
     const double *matrix16;
+    /// P3-005 support-paint data from `nsa1_paint_serialize`, or NULL if
+    /// this object has no painted enforcer/blocker regions.
+    const uint8_t *paint_data;
+    size_t paint_data_size;
 } NSA1SceneObject;
 
 /// Result of auto-arranging one object (P4-011): translation in mm to
@@ -113,6 +117,39 @@ int nsa1_auto_arrange(
     const NSA1SceneObject *objects, size_t object_count,
     double bed_width_mm, double bed_height_mm, double clearance_mm,
     NSA1ArrangeResult *out_results);
+
+/// Opaque handle to an in-progress support-paint editing session for one
+/// mesh (P3-005), wrapping the real engine's `Slic3r::TriangleSelector`.
+typedef struct NSA1PaintState NSA1PaintState;
+
+/// Creates a paint-editing session for one mesh. `vertices`/`indices`
+/// must be the object's local (un-instance-transformed) geometry, same
+/// convention as `LoadedMesh`. The mesh data is copied; the returned
+/// handle owns it. Free with `nsa1_paint_free`.
+NSA1PaintState *nsa1_paint_create(
+    const float *vertices, size_t vertex_count,
+    const uint32_t *indices, size_t index_count);
+
+/// Paints a spherical brush stroke at `(center_x, center_y, center_z)`
+/// (local mesh coordinates) with the given `radius` (mm), subdividing
+/// triangles as needed for a precise boundary (matches upstream's
+/// `TriangleSelector::select_patch` with a `Sphere` cursor).
+/// `enforcer_blocker` is 0 = erase (NONE), 1 = ENFORCER, 2 = BLOCKER.
+void nsa1_paint_sphere(
+    NSA1PaintState *state,
+    double center_x, double center_y, double center_z, double radius,
+    int enforcer_blocker);
+
+/// Serializes the current paint state to an opaque byte buffer (the
+/// real engine's own `TriangleSelector::serialize()` format, flattened).
+/// `*out_data` is newly allocated; free with `nsa1_paint_data_free`.
+void nsa1_paint_serialize(NSA1PaintState *state, uint8_t **out_data, size_t *out_size);
+
+/// Releases a buffer returned by `nsa1_paint_serialize`.
+void nsa1_paint_data_free(uint8_t *data);
+
+/// Releases a handle returned by `nsa1_paint_create`.
+void nsa1_paint_free(NSA1PaintState *state);
 
 /// One `key = value` config entry, already serialized to libslic3r's own
 /// config string format (the same format `BambuProfileLoader`'s resolved

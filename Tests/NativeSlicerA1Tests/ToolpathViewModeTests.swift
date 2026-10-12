@@ -35,35 +35,41 @@ final class ToolpathViewModeTests: XCTestCase {
 
     // MARK: - FeatureType mode
 
-    func testFeatureTypePerimeterIsOrange() {
-        let seg = makeSegment(extrusionRole: 0)
+    func testFeatureTypeExternalPerimeterMatchesUpstreamColor() {
+        let seg = makeSegment(extrusionRole: 2) // erExternalPerimeter
         let color = seg.color(for: .featureType)
-        // Perimeter (role 0) should be orange
-        XCTAssertGreaterThan(color.x, 0.9)
-        XCTAssertGreaterThan(color.y, 0.5)
-        XCTAssertLessThan(color.z, 0.2)
+        XCTAssertEqual(color.x, 1.00, accuracy: 0.01)
+        XCTAssertEqual(color.y, 0.49, accuracy: 0.01)
+        XCTAssertEqual(color.z, 0.22, accuracy: 0.01)
     }
 
-    func testFeatureTypeInfillIsGreen() {
-        let seg = makeSegment(extrusionRole: 3)
+    func testFeatureTypeInternalInfillMatchesUpstreamColor() {
+        let seg = makeSegment(extrusionRole: 4) // erInternalInfill
         let color = seg.color(for: .featureType)
-        // Infill (role 3) should be green
-        XCTAssertGreaterThan(color.y, 0.6)
-        XCTAssertLessThan(color.x, 0.5)
+        XCTAssertEqual(color.x, 0.69, accuracy: 0.01)
+        XCTAssertEqual(color.y, 0.19, accuracy: 0.01)
+        XCTAssertEqual(color.z, 0.16, accuracy: 0.01)
     }
 
-    func testFeatureTypeSupportIsBlue() {
-        let seg = makeSegment(extrusionRole: 4)
+    func testFeatureTypeSupportMaterialMatchesUpstreamColor() {
+        let seg = makeSegment(extrusionRole: 14) // erSupportMaterial
         let color = seg.color(for: .featureType)
-        // Support (role 4) should be blue
-        XCTAssertGreaterThan(color.z, 0.8)
-        XCTAssertLessThan(color.x, 0.4)
+        XCTAssertEqual(color.x, 0.0, accuracy: 0.01)
+        XCTAssertEqual(color.y, 1.0, accuracy: 0.01)
+        XCTAssertEqual(color.z, 0.0, accuracy: 0.01)
     }
 
-    func testFeatureTypeSkirtIsGray() {
-        let seg = makeSegment(extrusionRole: 7)  // skirt role
+    func testFeatureTypeSkirtMatchesUpstreamColor() {
+        let seg = makeSegment(extrusionRole: 12) // erSkirt
         let color = seg.color(for: .featureType)
-        // Skirt/brim (roles 7, 8) should be gray
+        XCTAssertEqual(color.x, 0.0, accuracy: 0.01)
+        XCTAssertEqual(color.y, 0.53, accuracy: 0.01)
+        XCTAssertEqual(color.z, 0.43, accuracy: 0.01)
+    }
+
+    func testFeatureTypeOutOfRangeRoleFallsBackToGray() {
+        let seg = makeSegment(extrusionRole: 99)
+        let color = seg.color(for: .featureType)
         XCTAssertEqual(color.x, 0.6, accuracy: 0.01)
         XCTAssertEqual(color.y, 0.6, accuracy: 0.01)
         XCTAssertEqual(color.z, 0.6, accuracy: 0.01)
