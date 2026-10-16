@@ -70,6 +70,26 @@ char *nsa1_get_3mf_unit(const char *path);
 int nsa1_auto_orient(const float *vertices, size_t vertex_count,
     const uint32_t *indices, size_t index_count, double *out_matrix16);
 
+/// Connector type/style/shape enums match upstream `CutConnectorType`/
+/// `CutConnectorStyle`/`CutConnectorShape` (Model.hpp) numeric order, so
+/// Swift callers can pass raw ints without depending on C++ enum layout.
+/// type: 0=Plug,1=Dowel,2=Snap,3=Thread. style: 0=Prizm,1=Frustum.
+/// shape: 0=Triangle,1=Square,2=Hexagon,3=Circle.
+///
+/// Generates a connector solid via the real engine's
+/// `ModelObject::get_connector_mesh` (P4-005), scaled to `radius`/`height`
+/// (mm) exactly as upstream's `apply_cut_connectors` scales the unit mesh.
+/// If `apply_hole_tolerance` is nonzero, additionally widens the XY scale
+/// by `radius_tolerance` and the Z scale by `height_tolerance`, matching
+/// upstream's `apply_tolerance` (CutUtils.cpp) used for the connector's
+/// negative-volume "hole" side. Returns NULL for an invalid enum value or
+/// on internal failure; free the result with `nsa1_free_mesh`.
+NSA1Mesh *nsa1_make_connector_mesh(
+    int32_t connector_type, int32_t connector_style, int32_t connector_shape,
+    float radius, float height,
+    float radius_tolerance, float height_tolerance,
+    uint8_t apply_hole_tolerance);
+
 /// Loads a 3MF file and returns the first volume's mesh of the model
 /// object at `object_index`, or NULL on failure/out-of-range index.
 int64_t nsa1_3mf_object_count(const char *path);

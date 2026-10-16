@@ -656,6 +656,51 @@ extern "C" int nsa1_cut_model(
         return -1;
     }
 }
+
+extern "C" NSA1Mesh *nsa1_make_connector_mesh(
+    int32_t connector_type, int32_t connector_style, int32_t connector_shape,
+    float radius, float height,
+    float radius_tolerance, float height_tolerance,
+    uint8_t apply_hole_tolerance) {
+    using namespace Slic3r;
+    if (connector_type < 0 || connector_type > static_cast<int32_t>(CutConnectorType::Thread))
+        return nullptr;
+    if (connector_style < 0 || connector_style > static_cast<int32_t>(CutConnectorStyle::Frustum))
+        return nullptr;
+    if (connector_shape < 0 || connector_shape > static_cast<int32_t>(CutConnectorShape::Circle))
+        return nullptr;
+    try {
+        CutConnectorAttributes attribs{
+            static_cast<CutConnectorType>(connector_type),
+            static_cast<CutConnectorStyle>(connector_style),
+            static_cast<CutConnectorShape>(connector_shape)};
+        CutConnectorParas paras{};
+        indexed_triangle_set its = ModelObject::get_connector_mesh(attribs, paras);
+
+        // Same scale-factor math as the real engine's apply_cut_connectors
+        // (radius/radius/height) composed with apply_tolerance's additive
+        // widening of the XY/Z scale when the mesh represents the "hole"
+        // side of a connector pair (CutUtils.cpp).
+        float sx = radius;
+        float sy = radius;
+        float sz = height;
+        if (apply_hole_tolerance) {
+            sx += radius_tolerance;
+            sy += radius_tolerance;
+            sz += height_tolerance;
+        }
+        for (auto &v : its.vertices) {
+            v.x() *= sx;
+            v.y() *= sy;
+            v.z() *= sz;
+        }
+
+        TriangleMesh mesh(std::move(its));
+        return copy_mesh(mesh);
+    } catch (...) {
+        return nullptr;
+    }
+}
 Slic3r::Model build_model_from_objects(const NSA1SceneObject *objects, size_t object_count) {
     Slic3r::Model model;
     for (size_t i = 0; i < object_count; ++i) {
