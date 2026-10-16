@@ -107,6 +107,13 @@ uint8_t *nsa1_load_3mf_paint(const char *path, int64_t object_index, size_t *out
 /// Returns 0 on success, -1 on failure/out-of-range index.
 int nsa1_3mf_object_matrix(const char *path, int64_t object_index, double *out_matrix16);
 
+/// Reads the real upstream `ModelObject::cut_id` for `object_index` from
+/// the 3MF's `Metadata/cut_information.xml` (written unconditionally by
+/// `store_3mf`/read by `load_3mf` for every object, not an invented
+/// format). `out_has_cut_id` is set to 0 if the object was never cut
+/// (`cut_id` invalid) and the returned value must then be ignored.
+uint64_t nsa1_load_3mf_cut_id(const char *path, int64_t object_index, int *out_has_cut_id);
+
 /// One Z-height band with an overridden layer height (P4-014), matching
 /// upstream's `t_layer_height_range` key (`[z_min, z_max)` in mm, object
 /// local Z) and the "layer_height" key of its paired `ModelConfig` value.
@@ -133,6 +140,11 @@ typedef struct {
     /// uniform layer height throughout the object.
     const NSA1LayerHeightRange *layer_height_ranges;
     size_t layer_height_range_count;
+    /// P4-007 cut lineage: nonzero shares one real upstream
+    /// `ModelObject::cut_id` value across every part that came from the
+    /// same cut, persisted via `nsa1_store_3mf`'s real 3MF writer
+    /// (`Metadata/cut_information.xml`); 0 = this object was never cut.
+    uint64_t cut_group_id;
 } NSA1SceneObject;
 
 /// Result of auto-arranging one object (P4-011): translation in mm to

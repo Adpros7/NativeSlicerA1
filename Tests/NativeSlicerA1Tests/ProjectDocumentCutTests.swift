@@ -139,6 +139,67 @@ final class ProjectDocumentCutTests: XCTestCase {
         XCTAssertEqual(connector.preset.radius, 7)
         XCTAssertEqual(connector.preset.height, 14)
     }
+    /// P4-007: performCut() must be undoable/redoable through the
+    /// existing scene-composition UndoStack, not a parallel mechanism —
+    /// undo restores the exact original object (same id, mesh intact,
+    /// no leftover cut results); redo reapplies the real cut again.
+    func testPerformCutIsUndoableAndRedoable() throws {
+        let document = ProjectDocument()
+        importDirectly(cubeMesh(), into: document)
+        let originalID = try XCTUnwrap(document.objects.first?.id)
+        let originalMeshID = try XCTUnwrap(document.objects.first?.sourceMeshID)
+        document.selection = originalID
+        document.cutPlaneMode = true
+        document.setCutPlaneCenter(SIMD3(10, 10, 7))
+
+        XCTAssertFalse(document.canUndoCut)
+        document.performCut()
+        XCTAssertEqual(document.objects.count, 2)
+        XCTAssertTrue(document.canUndoCut)
+        XCTAssertFalse(document.canRedoCut)
+
+        document.undoCut()
+        XCTAssertEqual(document.objects.count, 1)
+        XCTAssertEqual(document.objects.first?.id, originalID)
+        XCTAssertEqual(document.objects.first?.sourceMeshID, originalMeshID)
+        XCTAssertNotNil(document.meshes[originalMeshID], "undo must restore the original mesh, not just the scene object reference")
+        XCTAssertFalse(document.canUndoCut)
+        XCTAssertTrue(document.canRedoCut)
+
+        document.redoCut()
+        XCTAssertEqual(document.objects.count, 2)
+        XCTAssertFalse(document.objects.contains { $0.id == originalID })
+        XCTAssertTrue(document.canUndoCut)
+        XCTAssertFalse(document.canRedoCut)
+    }
+    /// P4-007: cut lineage must survive a project save/reload, not just
+    /// the raw bridge call — `ProjectDocument.save`/`load` must thread
+    /// `cutGroupID` end to end.
+    func testCutLineageSurvivesProjectSaveAndReload() throws {
+        let document = ProjectDocument()
+        importDirectly(cubeMesh(), into: document)
+        document.selection = document.objects[0].id
+        document.cutPlaneMode = true
+        document.setCutPlaneCenter(SIMD3(10, 10, 7))
+        document.performCut()
+        XCTAssertEqual(document.objects.count, 2)
+        let originalGroupID = try XCTUnwrap(document.objects.first?.cutGroupID)
+        XCTAssertTrue(document.objects.allSatisfy { $0.cutGroupID == originalGroupID })
+
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let project = directory.appendingPathComponent("cut-pair.3mf")
+
+        document.save(to: project)
+        XCTAssertNil(document.lastError)
+
+        let reloaded = ProjectDocument()
+        reloaded.load(from: project)
+        XCTAssertNil(reloaded.lastError)
+        XCTAssertEqual(reloaded.objects.count, 2)
+        XCTAssertTrue(reloaded.objects.allSatisfy { $0.cutGroupID == originalGroupID })
+    }
 
     /// End-to-end P4-006: a connector placed in the active document is
     /// passed through `performCut()` into the real upstream MeshBoolean

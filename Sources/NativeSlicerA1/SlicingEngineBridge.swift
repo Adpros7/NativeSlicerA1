@@ -213,6 +213,8 @@ private struct PendingSceneObject {
     let matrix16: [Double]
     var paintData: [UInt8] = []
     var layerHeightRanges: [NSA1LayerHeightRange] = []
+    /// P4-007 cut lineage — see `NSA1SceneObject.cut_group_id`.
+    var cutGroupID: UInt64 = 0
 }
 
 /// Recursively pins each object's vertex/index/matrix/paint/layer-height-range
@@ -238,7 +240,8 @@ private func withNSA1SceneObjects<R>(_ pending: [PendingSceneObject], _ body: (U
                                 indices: ibuf.baseAddress, index_count: ibuf.count,
                                 matrix16: mbuf.baseAddress,
                                 paint_data: pbuf.baseAddress, paint_data_size: pbuf.count,
-                                layer_height_ranges: lbuf.baseAddress, layer_height_range_count: lbuf.count
+                                layer_height_ranges: lbuf.baseAddress, layer_height_range_count: lbuf.count,
+                                cut_group_id: object.cutGroupID
                             ))
                             return build(index + 1, &acc)
                         }
@@ -438,7 +441,7 @@ enum SlicingEngine {
                 index_count: meshData.indices.count,
                 matrix16: UnsafePointer(matrixPtr),
                 paint_data: nil, paint_data_size: 0,
-                layer_height_ranges: nil, layer_height_range_count: 0
+                layer_height_ranges: nil, layer_height_range_count: 0, cut_group_id: 0
             ))
         }
 
@@ -486,6 +489,15 @@ enum SlicingEngine {
         return Array(UnsafeBufferPointer(start: raw, count: size))
     }
 
+    /// Reads the real upstream `ModelObject::cut_id` (P4-007 cut
+    /// lineage) saved by `storeThreeMF`'s `cutGroupIDs`. `nil` means the
+    /// object at `index` was never cut (or has no `cut_id` set).
+    static func loadThreeMFCutGroupID(atPath path: String, objectIndex index: Int) -> UInt64? {
+        var hasCutID: Int32 = 0
+        let value = path.withCString { nsa1_load_3mf_cut_id($0, Int64(index), &hasCutID) }
+        return hasCutID != 0 ? value : nil
+    }
+
     /// Reads the first instance's placement matrix of the model object at
     /// `index` from a 3MF file, via the real engine's `load_3mf`.
     static func threeMFObjectTransform(atPath path: String, objectIndex index: Int) throws -> simd_float4x4 {
@@ -510,13 +522,15 @@ enum SlicingEngine {
         atPath path: String,
         objects: [(mesh: LoadedMesh, transform: simd_float4x4)],
         configEntries: [(key: String, value: String)],
-        paintData: [[UInt8]] = []
+        paintData: [[UInt8]] = [],
+        cutGroupIDs: [UInt64?] = []
     ) throws {
         let pending = objects.enumerated().map { index, object in
             PendingSceneObject(
                 vertices: object.mesh.vertices, indices: object.mesh.indices,
                 matrix16: flatten(object.transform),
-                paintData: index < paintData.count ? paintData[index] : []
+                paintData: index < paintData.count ? paintData[index] : [],
+                cutGroupID: index < cutGroupIDs.count ? (cutGroupIDs[index] ?? 0) : 0
             )
         }
         let result = withNSA1SceneObjects(pending) { objPtr, objCount in

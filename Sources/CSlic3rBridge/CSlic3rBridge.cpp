@@ -545,6 +545,85 @@ extern "C" int nsa1_3mf_object_matrix(const char *path, int64_t object_index, do
     std::memcpy(out_matrix16, matrix.data(), 16 * sizeof(double));
     return 0;
 }
+
+/// P4-007 cut lineage persistence. `store_3mf`/`load_3mf` (`3mf.cpp`) are
+/// the LEGACY plain-3MF reader/writer this bridge uses throughout — NOT
+/// BambuStudio's separate full-project format (`bbs_3mf.cpp`), which is
+/// the only one with a real `ModelObject::cut_id`
+/// write/read (`Metadata/cut_information.xml`); confirmed by direct
+/// experimentation that `Slic3r::load_3mf` never restores a `cut_id` set
+/// before `Slic3r::store_3mf`. Reusing the real engine's object model
+/// isn't reachable here, so this appends one small custom archive entry
+/// to the already-written 3mf (via miniz's documented
+/// reader-to-writer conversion, same `miniz_extension.hpp` helpers
+/// `nsa1_load_3mf_config` already uses to read a custom entry) rather
+/// than inventing project-format internals.
+const char *NSA1_CUT_GROUPS_FILE = "Metadata/NSA1_CutGroups.txt";
+
+bool append_cut_groups_file(const char *path, const NSA1SceneObject *objects, size_t object_count) {
+    std::string content;
+    for (size_t i = 0; i < object_count; ++i) {
+        if (objects[i].cut_group_id != 0) {
+            content += std::to_string(i) + "=" + std::to_string(objects[i].cut_group_id) + "\n";
+        }
+    }
+    if (content.empty()) return true; // nothing to persist
+
+    mz_zip_archive archive;
+    mz_zip_zero_struct(&archive);
+    // mz_zip_writer_init_from_reader re-opens `path` itself in update
+    // mode, so the reader side must come from mz_zip_reader_init_file
+    // (path-based), not Slic3r::open_zip_reader's FILE*-based
+    // mz_zip_reader_init_cfile — mixing those left the writer unable to
+    // locate the archive's central directory for appending.
+    if (!mz_zip_reader_init_file(&archive, path, 0)) return false;
+    if (!mz_zip_writer_init_from_reader(&archive, path)) {
+        mz_zip_reader_end(&archive);
+        return false;
+    }
+    bool ok = mz_zip_writer_add_mem(&archive, NSA1_CUT_GROUPS_FILE, content.data(), content.size(), MZ_DEFAULT_COMPRESSION);
+    ok = mz_zip_writer_finalize_archive(&archive) && ok;
+    mz_zip_writer_end(&archive);
+    return ok;
+}
+extern "C" uint64_t nsa1_load_3mf_cut_id(const char *path, int64_t object_index, int *out_has_cut_id) {
+    *out_has_cut_id = 0;
+    if (object_index < 0) return 0;
+
+    mz_zip_archive archive;
+    mz_zip_zero_struct(&archive);
+    if (!Slic3r::open_zip_reader(&archive, path)) return 0;
+    int file_index = mz_zip_reader_locate_file(&archive, NSA1_CUT_GROUPS_FILE, nullptr, 0);
+    if (file_index < 0) {
+        Slic3r::close_zip_reader(&archive);
+        return 0; // project has no cut lineage recorded (never cut, or pre-P4-007)
+    }
+    mz_zip_archive_file_stat stat;
+    if (!mz_zip_reader_file_stat(&archive, file_index, &stat)) {
+        Slic3r::close_zip_reader(&archive);
+        return 0;
+    }
+    std::string buffer(static_cast<size_t>(stat.m_uncomp_size), '\0');
+    mz_bool extracted = mz_zip_reader_extract_file_to_mem(&archive, stat.m_filename, buffer.data(), buffer.size(), 0);
+    Slic3r::close_zip_reader(&archive);
+    if (!extracted) return 0;
+
+    const std::string prefix = std::to_string(object_index) + "=";
+    std::istringstream lines(buffer);
+    std::string line;
+    while (std::getline(lines, line)) {
+        if (line.rfind(prefix, 0) != 0) continue;
+        try {
+            uint64_t value = std::stoull(line.substr(prefix.size()));
+            *out_has_cut_id = 1;
+            return value;
+        } catch (...) {
+            return 0;
+        }
+    }
+    return 0;
+}
+
 namespace {
 
 
@@ -604,6 +683,7 @@ NSA1SceneObject *scene_object_from_model_object(const Slic3r::ModelObject &obj) 
     scene_obj->paint_data_size = 0;
     scene_obj->layer_height_ranges = nullptr;
     scene_obj->layer_height_range_count = 0;
+    scene_obj->cut_group_id = obj.is_cut() ? static_cast<uint64_t>(obj.cut_id.id().id) : 0;
 
     // `scene_obj` now owns mesh_data's vertices/indices arrays directly
     // (ownership transferred, not copied) — delete only the NSA1Mesh
@@ -632,6 +712,7 @@ NSA1SceneObject *scene_object_from_baked_mesh(const Slic3r::TriangleMesh &mesh) 
     scene_obj->paint_data_size = 0;
     scene_obj->layer_height_ranges = nullptr;
     scene_obj->layer_height_range_count = 0;
+    scene_obj->cut_group_id = 0; // P4-006 baked connector results: not yet propagated
     delete mesh_data; // transfer vertices/indices ownership to scene_obj
     return scene_obj;
 }
@@ -975,7 +1056,9 @@ extern "C" int nsa1_store_3mf(
     const NSA1ConfigEntry *config_entries, size_t config_entry_count) {
     Slic3r::Model model = build_model_from_objects(objects, object_count);
     Slic3r::DynamicPrintConfig config = build_full_config(config_entries, config_entry_count);
-    return Slic3r::store_3mf(path, &model, &config, /*fullpath_sources=*/true) ? 0 : -1;
+    if (!Slic3r::store_3mf(path, &model, &config, /*fullpath_sources=*/true)) return -1;
+    if (!append_cut_groups_file(path, objects, object_count)) return -1;
+    return 0;
 }
 
 extern "C" NSA1ConfigEntry *nsa1_load_3mf_config(const char *path, size_t *out_count) {

@@ -109,6 +109,27 @@ final class ProjectDocument: ObservableObject {
     /// moving the plane itself: each click adds one connector placement.
     @Published var connectorPlacementMode = false
 
+    /// P4-007: scene-composition undo for the cut operation itself,
+    /// reusing the existing generic `UndoStack` (not a parallel history
+    /// mechanism) — separate from each `SceneObject`'s own per-object
+    /// `transformHistory`, since a cut replaces objects wholesale rather
+    /// than adjusting one object's transform.
+    private var cutHistory: UndoStack<[SceneObject]>?
+    var canUndoCut: Bool { cutHistory?.canUndo ?? false }
+    var canRedoCut: Bool { cutHistory?.canRedo ?? false }
+
+    func undoCut() {
+        guard var history = cutHistory, history.canUndo else { return }
+        objects = history.undo()
+        cutHistory = history
+    }
+
+    func redoCut() {
+        guard var history = cutHistory, history.canRedo else { return }
+        objects = history.redo()
+        cutHistory = history
+    }
+
     /// Initializes `cutPlane` centered on the selected object's own
     /// world-space bounding box center, flat (no tilt), sized to
     /// comfortably exceed the object's own footprint.
@@ -186,21 +207,26 @@ final class ProjectDocument: ObservableObject {
                 lastError = "Cut produced no geometry — check the plane actually intersects the object."
                 return
             }
-            let originalID = objects[index].id
-            let originalMeshID = objects[index].sourceMeshID
-            objects.remove(at: index)
-            paintStates.removeValue(forKey: originalID)
-            if !objects.contains(where: { $0.sourceMeshID == originalMeshID }) {
-                meshes.removeValue(forKey: originalMeshID)
+            // P4-007: snapshot scene composition before mutating, so
+            // undoCut()/redoCut() can restore it exactly. The removed
+            // object's mesh is deliberately NOT deleted from `meshes`
+            // even if briefly unreferenced — undo needs it back, and an
+            // orphaned LoadedMesh is a bounded, acceptable cost for
+            // correct reversibility (no parallel storage mechanism).
+            if cutHistory == nil {
+                cutHistory = UndoStack(initial: objects)
             }
+            objects.remove(at: index)
+            let cutGroupID = UInt64.random(in: 1...UInt64.max) // 0 means "not cut"
             var newIDs: [UUID] = []
             for result in results {
                 let meshID = UUID()
                 meshes[meshID] = result.mesh
-                let newObject = SceneObject(sourceMeshID: meshID, transform: Transform(matrix: result.transform))
+                let newObject = SceneObject(sourceMeshID: meshID, transform: Transform(matrix: result.transform), cutGroupID: cutGroupID)
                 objects.append(newObject)
                 newIDs.append(newObject.id)
             }
+            cutHistory?.push(objects)
             selection = newIDs.first
             cutPlaneMode = false
             lastError = nil
@@ -208,7 +234,6 @@ final class ProjectDocument: ObservableObject {
             lastError = "Cut failed: \(error)"
         }
     }
-
 
     /// Imports an STL or 3MF file, adding one scene object per mesh found
     /// (a 3MF can contain multiple model objects; `.3mf` imports also
@@ -293,15 +318,19 @@ final class ProjectDocument: ObservableObject {
     func save(to url: URL) {
         var payload: [(mesh: LoadedMesh, transform: simd_float4x4)] = []
         var paintData: [[UInt8]] = []
+        var cutGroupIDs: [UInt64?] = []
         for object in objects {
             guard let mesh = meshes[object.sourceMeshID] else { continue }
             payload.append((mesh, object.transform.matrix))
             paintData.append(paintStates[object.id]?.serialize() ?? [])
+            cutGroupIDs.append(object.cutGroupID)
         }
         do {
             let loader = try BambuProfileLoader()
             let configEntries = try SlicingJob.resolvedConfigEntries(loader: loader, selection: profileSelection)
-            try SlicingEngine.storeThreeMF(atPath: url.path, objects: payload, configEntries: configEntries, paintData: paintData)
+            try SlicingEngine.storeThreeMF(
+                atPath: url.path, objects: payload, configEntries: configEntries,
+                paintData: paintData, cutGroupIDs: cutGroupIDs)
             lastError = nil
         } catch {
             lastError = "Save failed: \(error)"
@@ -317,21 +346,23 @@ final class ProjectDocument: ObservableObject {
             let loaded = try loadScene(at: url)
             let configEntries = SlicingEngine.loadThreeMFConfig(atPath: url.path)
             var restoredPaintStates: [UUID: SupportPaintState] = [:]
+            var restoredObjects = loaded.objects
             if url.pathExtension.lowercased() == "3mf" {
                 for (index, object) in loaded.objects.enumerated() {
                     let data = SlicingEngine.loadThreeMFPaint(atPath: url.path, objectIndex: index)
-                    guard !data.isEmpty,
-                          let mesh = loaded.meshes[object.sourceMeshID],
-                          let state = SupportPaintState(mesh: mesh),
-                          state.deserialize(data)
-                    else { continue }
-                    restoredPaintStates[object.id] = state
+                    if !data.isEmpty,
+                       let mesh = loaded.meshes[object.sourceMeshID],
+                       let state = SupportPaintState(mesh: mesh),
+                       state.deserialize(data) {
+                        restoredPaintStates[object.id] = state
+                    }
+                    restoredObjects[index].cutGroupID = SlicingEngine.loadThreeMFCutGroupID(atPath: url.path, objectIndex: index)
                 }
             }
             meshes = loaded.meshes
-            objects = loaded.objects
+            objects = restoredObjects
             paintStates = restoredPaintStates
-            selection = loaded.objects.last?.id
+            selection = restoredObjects.last?.id
             profileSelection = SlicingJob.restoreSelection(from: configEntries)
             lastError = nil
         } catch {
