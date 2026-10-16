@@ -5,25 +5,24 @@ Phase 1 (Application Foundation) and Phase 2's non-hardware items complete.
 Phase 3: P3-001 audit, P3-002 calibration, and P3-005 support painting
 complete. Phase 4: P4-001 unit detection, P4-003 (largely via P1-006),
 P4-004 cut (engine layer), P4-005 connector presets, P4-010 auto-orient,
-P4-011 auto-arrange, and P4-012 support blocker/enforcer painting
-complete. Phase 9 P9-007 (macOS deployment-target/zstd fix) is complete
-(`dc2fc9c`).
+P4-011 auto-arrange, P4-012 support blocker/enforcer painting, and
+P4-014 variable layer height complete. Phase 9 P9-007 (macOS
+deployment-target/zstd fix) is complete (`dc2fc9c`).
 
 ## Last completed task
-P4-005: connector presets. `nsa1_make_connector_mesh` wraps the real
-engine's `ModelObject::get_connector_mesh` (Plug/Dowel/Snap/Thread x
-Prizm/Frustum x 4 shapes -> `its_make_cylinder`/`its_make_cone`/
-`its_make_frustum_dowel`/`its_make_snap`/`its_make_thread`), scaled by the
-exact transform `apply_cut_connectors` uses, with an `apply_hole_tolerance`
-flag reproducing `apply_tolerance`'s additive radius/height widening for
-the hole side (CutUtils.cpp). `Sources/NativeSlicerA1/Connectors.swift`:
-`ConnectorType`/`Style`/`Shape` enums (raw values match upstream numeric
-order), `ConnectorPreset`, `ConnectorMeshGenerator.generate()`.
-`Tests/NativeSlicerA1Tests/ConnectorTests.swift`: 6 tests against the real
-engine (exact Plug/Prizm cylinder dimensions, linear radius/height
-scaling, exact tolerance widening, all 4 types produce real non-empty
-geometry including Snap's real bulge past nominal radius verified rather
-than asserted away). Full suite: 93 tests passing. Pushed `088176f`.
+P4-014: variable layer height. `NSA1SceneObject` gained an optional
+`layer_height_ranges` array; `build_model_from_objects` populates the
+real engine's own `ModelObject::layer_config_ranges`, consumed directly
+by `PrintObject::update_layer_height_profile` ->
+`layer_height_profile_from_ranges` — no reimplemented profile logic.
+`SceneObject.layerHeightRanges` + `ProjectDocument.setLayerHeightRanges`
++ `LayerHeightRangesView.swift` (Z-range list sheet, "Layer Heights…"
+toolbar button). `VariableLayerHeightTests`: 2 tests proving a real
+toolpath Z-step change confined to the overridden band. Pushed `f446d10`.
+
+Before that: P4-005 connector presets (`nsa1_make_connector_mesh`
+wrapping `ModelObject::get_connector_mesh`, `Connectors.swift`,
+`ConnectorTests` — 6 tests). Pushed `088176f`.
 
 Before that: P3-005/P4-012 interactive support-paint viewport UI (paint
 mode toggle, brush radius/type, ray-cast click/drag painting via
@@ -93,17 +92,18 @@ Pick one, in order of real unblocked value:
    calling the already-working `SlicingEngine.cutModel`.
 2. P4-008/P4-009: multi-plate arrangement + assembly previews (P3
    priority, no blocking gaps, builds on P4-011's working `arrange()`
-   bridge).
+   bridge; TODO.md explicitly ranks this behind the still-open
+   P4-006/007 connector gizmo work, so only pick this up first if the
+   gizmo work is intentionally deferred).
 3. P4-013: modifier meshes (can reuse P3-005's raycast + painting
    gizmo infra once the cut-plane gizmo above exists, since modifier
    mesh placement needs similar interactive placement).
-4. P4-014: variable layer height (Z-range UI only, no gizmo dependency —
-   could be done independently of the cut-plane gizmo work).
-5. P3-004: multicolor/MMU painting — intentionally last (P4 priority).
+4. P3-004: multicolor/MMU painting — intentionally last (P4 priority).
 
 ## Relevant commands
 - `swift build` / `swift test` / `swift run NativeSlicerA1`
 - `swift test --filter ConnectorTests` — 6 real connector-mesh tests
+- `swift test --filter VariableLayerHeightTests` — 2 real layer-height-range tests
 - `swift test --filter SupportPaintingTests` — 5 real paint engine tests
 - `swift test --filter RaycastTests` — viewport hit testing
 - `swift test --filter AutoArrangeTests` — 3 orient/arrange tests
