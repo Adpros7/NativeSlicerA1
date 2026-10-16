@@ -272,6 +272,14 @@ private func withNSA1ConfigEntries<R>(_ pending: [(key: String, value: String)],
     return build(0, &acc)
 }
 
+/// Mirrors upstream's `nsa1_cut_model` numeric `cut_mode` convention
+/// exactly (`CSlic3rBridge.h`: 0=both, 1=lower, 2=upper).
+enum CutMode: Int32, CaseIterable, Sendable {
+    case both = 0
+    case lowerOnly = 1
+    case upperOnly = 2
+}
+
 /// Thin Swift wrapper over the C-ABI bridge into the real, vendored
 /// libslic3r (see ARCHITECTURE.md P0-005, RESEARCH.md P1-003). Proves the
 /// Swift executable actually links and calls into the compiled slicing
@@ -784,14 +792,24 @@ enum SlicingEngine {
         return generation
     }
 
-    /// Cuts a model object along a user-specified plane (P4-004).
-    /// Accepts mesh data as `(vertices, indices, matrix)` tuples.
-    /// Returns an array of sliced `LoadedMesh` objects (0, 1, or 2).
+    /// Cuts a model object along a user-specified world-space plane
+    /// (P4-004). `objects` is normally exactly one `(mesh, transform)`
+    /// pair — the real engine's `ModelObject::cut` only ever cuts
+    /// `model.objects.front()`. `planePoints` are 4 points in the SAME
+    /// world space as `transform`'s translation (upstream's `cut()`
+    /// subtracts the instance offset from these points internally, so
+    /// they must already be where the object is actually placed, not
+    /// mesh-local coordinates). Returns the resulting parts (0, 1, or 2
+    /// depending on `cutMode`) each as a real `(mesh, transform)` pair —
+    /// the transform is the real engine's own post-cut instance
+    /// placement (`reset_instance_transformation`), which is NOT always
+    /// identity (e.g. an object cut away from the world origin keeps
+    /// that world offset) and must not be dropped.
     static func cutModel(
-        meshes: [(vertices: [Float], indices: [UInt32], matrix: simd_float4x4)],
+        objects: [(mesh: LoadedMesh, transform: simd_float4x4)],
         planePoints: [(Float, Float, Float)],
-        cutMode: Int32
-    ) throws -> [LoadedMesh] {
+        cutMode: CutMode
+    ) throws -> [(mesh: LoadedMesh, transform: simd_float4x4)] {
         guard planePoints.count == 4 else {
             throw SlicingEngineError.sliceFailed("cut plane requires exactly 4 points")
         }
@@ -804,44 +822,22 @@ enum SlicingEngine {
                 NSA1Vec3d(x: Double(planePoints[2].0), y: Double(planePoints[2].1), z: Double(planePoints[2].2)),
                 NSA1Vec3d(x: Double(planePoints[3].0), y: Double(planePoints[3].1), z: Double(planePoints[3].2))
             ),
-            cut_mode: cutMode
+            cut_mode: cutMode.rawValue
         )
 
-        // Build scene objects from the input meshes
-        var sceneObjects: [NSA1SceneObject] = []
-        var matrixPointers: [UnsafeMutablePointer<Double>] = []
-        defer { for p in matrixPointers { p.deallocate() } }
-        for meshData in meshes {
-            let mbuf = flatten(meshData.matrix)
-            let matrixPtr = UnsafeMutablePointer<Double>.allocate(capacity: 16)
-            matrixPtr.initialize(from: mbuf, count: 16)
-            matrixPointers.append(matrixPtr)
-            sceneObjects.append(NSA1SceneObject(
-                vertices: UnsafePointer(meshData.vertices),
-                vertex_count: meshData.vertices.count / 3,
-                indices: UnsafePointer(meshData.indices),
-                index_count: meshData.indices.count,
-                matrix16: UnsafePointer(matrixPtr),
-                paint_data: nil, paint_data_size: 0,
-                layer_height_ranges: nil, layer_height_range_count: 0
-            ))
+        let pending = objects.map { object in
+            PendingSceneObject(
+                vertices: object.mesh.vertices, indices: object.mesh.indices,
+                matrix16: flatten(object.transform)
+            )
         }
 
         var rawResultPtr: UnsafeMutablePointer<UnsafeMutablePointer<NSA1SceneObject>?>? = nil
         var resultCount: Int = 0
         var rawError: UnsafeMutablePointer<CChar>? = nil
 
-        var sceneObjPtrs: [NSA1SceneObject] = sceneObjects
-
-        let status = sceneObjPtrs.withUnsafeBufferPointer { ptrBuffer in
-            nsa1_cut_model(
-                ptrBuffer.baseAddress,
-                sceneObjects.count,
-                &cutRequest,
-                &rawResultPtr,
-                &resultCount,
-                &rawError
-            )
+        let status = withNSA1SceneObjects(pending) { objPtr, objCount in
+            nsa1_cut_model(objPtr, objCount, &cutRequest, &rawResultPtr, &resultCount, &rawError)
         }
 
         if let rawError {
@@ -853,50 +849,28 @@ enum SlicingEngine {
             throw SlicingEngineError.sliceFailed(errorMessage ?? "unknown cut error")
         }
 
-        // Convert result to LoadedMesh array
-        if resultCount == 0 {
+        guard resultCount > 0, let rawResultPtr else {
             return []
         }
 
-        let resultMeshes = UnsafeBufferPointer(
-            start: rawResultPtr?.pointee,
-            count: resultCount
-        )
-
-        var outMeshes: [LoadedMesh] = []
-        for i in 0..<resultCount {
-            let sceneObj = resultMeshes[i]
-            let vertexFloatCount = Int(sceneObj.vertex_count) * 3
-            let indexCount = Int(sceneObj.index_count)
-            let vertices = Array(UnsafeBufferPointer(
-                start: sceneObj.vertices,
-                count: vertexFloatCount
-            ))
-            let indices = Array(UnsafeBufferPointer(
-                start: sceneObj.indices,
-                count: indexCount
-            ))
-            outMeshes.append(LoadedMesh(
-                vertices: vertices,
-                indices: indices
-            ))
-        }
-
-        // Free the result array
-        if let rawResultPtr {
-            for i in 0..<resultCount {
-                var meshData = NSA1Mesh(
-                    vertices: rawResultPtr[i]!.pointee.vertices,
-                    vertex_count: rawResultPtr[i]!.pointee.vertex_count,
-                    indices: rawResultPtr[i]!.pointee.indices,
-                    index_count: rawResultPtr[i]!.pointee.index_count
-                )
-                nsa1_free_mesh(&meshData)
+        let resultPtrs = UnsafeBufferPointer(start: rawResultPtr, count: resultCount)
+        var results: [(mesh: LoadedMesh, transform: simd_float4x4)] = []
+        results.reserveCapacity(resultCount)
+        for ptr in resultPtrs {
+            let sceneObj = ptr!.pointee
+            let vertices = Array(UnsafeBufferPointer(start: sceneObj.vertices, count: Int(sceneObj.vertex_count) * 3))
+            let indices = Array(UnsafeBufferPointer(start: sceneObj.indices, count: Int(sceneObj.index_count)))
+            let transform: simd_float4x4
+            if let matrix16 = sceneObj.matrix16 {
+                transform = unflatten(UnsafeBufferPointer(start: matrix16, count: 16))
+            } else {
+                transform = matrix_identity_float4x4
             }
-            free(rawResultPtr)
+            results.append((mesh: LoadedMesh(vertices: vertices, indices: indices), transform: transform))
         }
 
-        return outMeshes
+        nsa1_free_cut_results(rawResultPtr, resultCount)
+        return results
     }
 
 }

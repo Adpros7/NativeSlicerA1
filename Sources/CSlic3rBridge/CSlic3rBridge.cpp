@@ -567,9 +567,22 @@ void cut_model_at_height(Slic3r::Model &model, double height, Slic3r::ModelObjec
 // Forward declaration (defined later in this file).
 Slic3r::Model build_model_from_objects(const NSA1SceneObject *objects, size_t object_count);
 // Helper: converts a Slic3r::ModelObject to an NSA1SceneObject.
-// The mesh is already transformed, so no matrix is needed.
+// The mesh is in the object's own instance-rotation/scale orientation
+// (baked in by ModelObject::cut's process_volume_cut) but NOT translated
+// — the real per-instance offset computed by cut()'s
+// reset_instance_transformation (e.g. the original object's world
+// position, needed whenever the cut object wasn't sitting at the world
+// origin) must be returned via matrix16, not dropped, or the caller's
+// resulting mesh lands at the wrong world position.
 NSA1SceneObject *scene_object_from_model_object(const Slic3r::ModelObject &obj) {
-    Slic3r::TriangleMesh mesh = obj.mesh();
+    // raw_mesh() applies each volume's own matrix (needed: add_volume's
+    // default modify_to_center_geometry=true re-centers the cut result's
+    // volume and compensates with a volume-level offset) but, unlike
+    // mesh(), does NOT also apply the instance transform — that's
+    // returned separately below via matrix16. Using mesh() here was a
+    // real bug: it already bakes in the full instance transform, so
+    // returning the instance transform too double-applies it.
+    Slic3r::TriangleMesh mesh = obj.raw_mesh();
     NSA1Mesh *mesh_data = copy_mesh(mesh);
 
     auto *scene_obj = static_cast<NSA1SceneObject *>(
@@ -578,14 +591,43 @@ NSA1SceneObject *scene_object_from_model_object(const Slic3r::ModelObject &obj) 
     scene_obj->vertex_count = mesh_data->vertex_count;
     scene_obj->indices = mesh_data->indices;
     scene_obj->index_count = mesh_data->index_count;
-    scene_obj->matrix16 = nullptr;
+    if (!obj.instances.empty()) {
+        auto *matrix16 = static_cast<double *>(malloc(16 * sizeof(double)));
+        const Slic3r::Transform3d &matrix = obj.instances.front()->get_transformation().get_matrix();
+        std::memcpy(matrix16, matrix.data(), 16 * sizeof(double));
+        scene_obj->matrix16 = matrix16;
+    } else {
+        scene_obj->matrix16 = nullptr;
+    }
     scene_obj->paint_data = nullptr;
     scene_obj->paint_data_size = 0;
     scene_obj->layer_height_ranges = nullptr;
     scene_obj->layer_height_range_count = 0;
 
-    nsa1_free_mesh(mesh_data);
+    // `scene_obj` now owns mesh_data's vertices/indices arrays directly
+    // (ownership transferred, not copied) — delete only the NSA1Mesh
+    // wrapper struct itself, NOT nsa1_free_mesh(mesh_data), which would
+    // delete[] the same arrays scene_obj still points to (real
+    // dangling-pointer/double-free bug found via CutModelTests actually
+    // exercising this function for the first time).
+    delete mesh_data;
     return scene_obj;
+}
+
+/// Releases an array returned by `nsa1_cut_model`'s `out_objects`: each
+/// entry's `vertices`/`indices` (heap-allocated by `copy_mesh` via
+/// `new[]`), `matrix16` (malloc'd), the entry struct itself (malloc'd),
+/// and the outer array (malloc'd).
+extern "C" void nsa1_free_cut_results(NSA1SceneObject **objects, size_t count) {
+    if (!objects) return;
+    for (size_t i = 0; i < count; ++i) {
+        if (!objects[i]) continue;
+        delete[] objects[i]->vertices;
+        delete[] objects[i]->indices;
+        free(const_cast<double *>(objects[i]->matrix16));
+        free(objects[i]);
+    }
+    free(objects);
 }
 
 extern "C" int nsa1_cut_model(
@@ -617,17 +659,22 @@ extern "C" int nsa1_cut_model(
                 cut_request->plane_points[i].z);
         }
 
-        // Collect cut results: for cut_mode 0 (both), we need both halves
+        // Collect cut results. cut_mode 0 (both halves) uses a single
+        // call with combined KeepUpper|KeepLower attributes (matching
+        // upstream's own GUI call pattern) rather than two separate
+        // calls — ModelObjectCutAttributes is a bitmask
+        // (ENABLE_ENUM_BITMASK_OPERATORS), and calling cut() twice on
+        // the same source object is both wasteful (duplicate
+        // cut_mesh work) and semantically wrong: ModelObject::cut's
+        // per-volume loop resets supported_facets/fuzzy_skin_facets/
+        // seam_facets/mmu_segmentation_facets on `this` as a side
+        // effect, and apply_cut_attributes only assigns a real cut_id
+        // when both KeepUpper and KeepLower are set in the SAME call.
         std::vector<Slic3r::ModelObject *> all_parts;
-        if (cut_request->cut_mode == 0) {
-            // Cut twice: once for lower, once for upper
-            auto lower = model.objects.front()->cut(0, plane, Slic3r::ModelObjectCutAttribute::KeepLower);
-            auto upper = model.objects.front()->cut(0, plane, Slic3r::ModelObjectCutAttribute::KeepUpper);
-            for (auto *part : lower) all_parts.push_back(part);
-            for (auto *part : upper) all_parts.push_back(part);
-        } else {
-            Slic3r::ModelObjectCutAttribute attribute = Slic3r::ModelObjectCutAttribute::KeepLower;
-            if (cut_request->cut_mode == 2) attribute = Slic3r::ModelObjectCutAttribute::KeepUpper;
+        Slic3r::ModelObjectCutAttributes attribute = Slic3r::ModelObjectCutAttribute::KeepLower;
+        if (cut_request->cut_mode == 2) attribute = Slic3r::ModelObjectCutAttributes(Slic3r::ModelObjectCutAttribute::KeepUpper);
+        else if (cut_request->cut_mode == 0) attribute = Slic3r::ModelObjectCutAttribute::KeepLower | Slic3r::ModelObjectCutAttribute::KeepUpper;
+        {
             auto parts = model.objects.front()->cut(0, plane, attribute);
             for (auto *part : parts) all_parts.push_back(part);
         }

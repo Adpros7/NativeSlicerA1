@@ -399,6 +399,11 @@ int nsa1_cut_model(
     NSA1SceneObject ***out_objects, size_t *out_object_count,
     char **out_error);
 
+/// Releases an `out_objects` array returned by `nsa1_cut_model` (every
+/// entry's mesh/matrix buffers, the entries themselves, and the array).
+/// Safe to call with NULL.
+void nsa1_free_cut_results(NSA1SceneObject **objects, size_t count);
+
 
 #ifdef __cplusplus
 }
