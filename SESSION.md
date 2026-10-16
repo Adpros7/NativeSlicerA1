@@ -6,101 +6,73 @@ Phase 3: P3-001 audit, P3-002 calibration, and P3-005 support painting
 complete. Phase 4: P4-001 unit detection, P4-003 (largely via P1-006),
 P4-004 cut (engine layer + real interactive cut-plane gizmo UI), P4-005
 connector presets, P4-006 connector customization, P4-007 connector
-reversibility, P4-008 multi-plate arrangement, P4-010 auto-orient,
-P4-011 auto-arrange, P4-012 support blocker/enforcer painting, and
-P4-014 variable layer height complete. Phase 9 P9-007 is complete.
+reversibility, P4-008 multi-plate arrangement, P4-009 assembly previews,
+P4-010 auto-orient, P4-011 auto-arrange, P4-012 support blocker/enforcer
+painting, and P4-014 variable layer height complete. Only P4-002 (manual
+mesh repair, deferred pending an observed need) and P4-013 (modifier
+meshes) remain open in Phase 4. Phase 9 P9-007 is complete.
 
 ## Last completed task
-P4-008: multi-plate arrangement (batch-job plate grouping — the A1 is
-single-bed hardware, so "plate" here is an app-level concept: independent
-object subsets, each with its own real auto-arrange/slice/export, not
-simultaneous multi-bed hardware). `Plate` (id: `UInt64`, name),
-`SceneObject.plateID`, `ProjectDocument.plates`/`activePlateID`/
-`objectsOnActivePlate`/`addPlate()`/`removePlate()` (reassigns objects to
-the remaining plate, never deletes them) /`autoArrangeActivePlate()`
-(real `SlicingEngine.autoArrange`, filtered to the active plate only).
-Plate assignment persists through save/load.
-`Tests/NativeSlicerA1Tests/MultiPlateTests.swift`: 5 tests. Full suite:
-119 tests passing (verified via a full clean rebuild + 5 repeated runs,
-after the investigation below).
+P4-009: assembly/plate previews. Scoped as a REAL 2D top-down bed
+schematic (not a placeholder graphic) built from each object's actual
+world-space XY footprint, matching upstream's real intent ("does this
+fit, what's on this plate") without needing BambuStudio's full 3D
+thumbnail-rendering pipeline. `ProjectDocument.platePreview(bedWidth:
+bedHeight:) -> [PlatePreviewEntry]` reuses the same real
+`worldBoundingBox` the P4-006 cut plane already uses, projects into
+bed-relative coordinates, and flags objects that don't fit the bed.
+`PlatePreviewView.swift`: plate switcher + Add/Remove Plate + a
+`GeometryReader`-scaled 2D rendering of real object footprints (red
+outline for out-of-bounds, accent for fitting), wired to a new "Plates
+(N)…" toolbar button. `Tests/NativeSlicerA1Tests/PlatePreviewTests.swift`:
+3 tests (real bed-relative footprint math, out-of-bounds flagging, active-
+plate-only filtering). Full suite: 122 tests passing (3 repeated runs,
+clean — no C++ changes this time, so the P4-008 toolchain sensitivity
+doesn't apply here).
 
-### IMPORTANT finding: a real, reproduced, bisected toolchain/binary-layout sensitivity
-While implementing plate-id 3MF persistence, merely adding an unused
-`plateIDs: [UInt64] = []` parameter to `SlicingEngine.storeThreeMF`'s
-Swift signature (no behavior change — the parameter was provably dead,
-`_ = plateIDs`) made an UNRELATED, already-passing test
-(`SupportPaintingTests.testSupportPaintPersistsThroughThreeMF`) fail
-deterministically (0/0 support generated instead of >0) when run as
-part of the full suite — while remaining 100% green in isolation. This
-was rigorously bisected, one change at a time, with full clean rebuilds
-and 3-5 repeated full-suite runs at each step (not single-run
-conclusions) to rule out flakiness/stale-build artifacts:
-- `NSA1SceneObject` growing by a SECOND `uint64_t` field (`plate_id`,
-  on top of P4-007's already-safe `cut_group_id`): broke it.
-- Moving `plate_id` OUT of `NSA1SceneObject` into a separate C
-  parameter on `nsa1_store_3mf` itself: STILL broke it, even with
-  `nil`/empty data always passed.
-- Adding the dead, unused `plateIDs` Swift parameter to
-  `storeThreeMF`'s signature ALONE, data completely unused: STILL
-  broke it.
-- Reverting `storeThreeMF`'s signature to be byte-identical to its
-  known-good committed form, and instead adding plate-id persistence
-  as a WHOLLY SEPARATE function (`SlicingEngine.storeThreeMFPlateIDs`
-  / `nsa1_append_plate_ids`, called as its own step right after
-  `storeThreeMF` succeeds): fully resolved it — 5/5 clean full-suite
-  runs plus a final clean-rebuild verification.
-This is a genuine, reproducible sensitivity to `storeThreeMF`'s exact
-signature/binary layout (root cause not fully understood — plausibly a
-Swift/XCTest toolchain or linker-layout interaction, not a logic bug:
-the data path was provably inert at every broken step). Documented
-in-code at both the `nsa1_store_3mf`/`nsa1_append_plate_ids` C header
-declarations and `storeThreeMFPlateIDs`'s Swift doc comment. **Any
-future change to `storeThreeMF`'s signature should re-run the full
-suite 3-5× (not once) before trusting a clean result**, given how
-subtle and full-suite-only this was.
+Before that (same session): P4-008 multi-plate arrangement — see the
+IMPORTANT toolchain-sensitivity finding below, still relevant for any
+future `storeThreeMF` signature changes. Pushed `a27811f`.
 
-Before that (same session): P4-007 connector reversibility (scene-level
-cut undo/redo + cut_id 3MF persistence, discovering the legacy-vs-bbs
-3MF format split). Pushed `37928f6`. Before that: P4-004/P4-006
-interactive cut-plane gizmo + connector customization, 3 real `cutModel`
-bugs fixed. Pushed `a5253bc`.
+### IMPORTANT finding (still applies): a real, reproduced, bisected toolchain/binary-layout sensitivity
+While implementing P4-008's plate-id 3MF persistence, merely adding an
+unused `plateIDs: [UInt64] = []` parameter to
+`SlicingEngine.storeThreeMF`'s Swift signature (no behavior change —
+the parameter was provably dead) made an UNRELATED, already-passing
+test fail deterministically across the full suite while staying 100%
+green in isolation. Rigorously bisected (one change at a time, full
+clean rebuilds, 3-5 repeated full-suite runs per step). Root cause not
+fully understood (plausibly Swift/XCTest toolchain or linker-layout
+interaction). Fixed by keeping `storeThreeMF`'s signature byte-identical
+to its known-good form and adding new per-object 3MF metadata via a
+wholly separate function instead (see `storeThreeMFPlateIDs` /
+`nsa1_append_plate_ids` for the pattern to follow). **Any future change
+to `storeThreeMF`'s signature should re-run the full suite 3-5× (not
+once) before trusting a clean result.**
 
 ## Important technical decisions
-- **`storeThreeMF`'s signature is now effectively frozen** — new
-  per-object 3MF metadata (beyond `cutGroupIDs`/`paintData` already
-  there) should be added via a separate `storeThreeMF*`-style follow-up
-  call (see `storeThreeMFPlateIDs`'s pattern), not a new parameter on
-  `storeThreeMF` itself, until the toolchain sensitivity above is
-  actually root-caused.
+- **`storeThreeMF`'s signature is effectively frozen** — see the finding
+  above. New per-object 3MF metadata goes in a separate follow-up call.
 - **Two different 3MF formats exist in the vendored engine**:
-  `Format/3mf.cpp` (legacy, what this bridge uses throughout) vs.
-  `Format/bbs_3mf.cpp` (BambuStudio's separate full project format with
-  `cut_id`/multi-plate support, NOT used here). P4-007/P4-008 both
-  persist their own scalar metadata via small self-contained custom
-  3MF archive entries (miniz reader→writer conversion) instead.
+  `Format/3mf.cpp` (legacy, used throughout this bridge) vs.
+  `Format/bbs_3mf.cpp` (BambuStudio's separate full project format,
+  not used here).
 - **Plate id is `UInt64`, not `UUID`**: matches `cutGroupID`'s existing
-  scalar-persistence convention directly, no mapping layer needed.
-- **Connector mesh generator reuses upstream's exact scale math**: unit
-  mesh from `get_connector_mesh` times `(radius, radius, height)`, plus
-  additive tolerance for the hole side.
-- **Connectors are baked via real CGAL Boolean**, not a parallel
-  modifier-volume system (the one-mesh-per-object C-ABI can't carry
-  BambuStudio's full volume/modifier graph).
-- **Cut-plane default normal is world +Z**: matches the slicing engine's
-  own height axis, independent of the viewport camera's Y-up orbit.
-- **P3-005/P4-012**: `TriangleSelector`-backed C-ABI; paint state owned by
-  `ProjectDocument` per object ID; undo/redo via the existing generic
-  `UndoStack`.
+  scalar-persistence convention.
+- **P4-009 scoped to a real 2D footprint check, not 3D thumbnails**:
+  BambuStudio's actual thumbnail pipeline needs off-screen Metal
+  rendering infrastructure this app doesn't have; the 2D bed-footprint
+  view delivers the same real "preview" value (what's on this plate,
+  does it fit) with code that's directly testable and uses only
+  already-proven `worldBoundingBox` math.
+- **Connector mesh generator reuses upstream's exact scale math**; CGAL
+  Boolean for real connector baking; cut-plane default normal is world
+  +Z; P3-005/P4-012 paint state owned by `ProjectDocument`.
 - **Prior P4-010/P4-011 fixes**: 5 real root causes fixed in `4564ece`.
-  `vendor/` was only used for temporary diagnostics, always reverted
-  pristine — including this session's `bbs_3mf.cpp` debug instrumentation
-  while tracing the cut_id architecture question (fully reverted).
 
 ## Uncommitted changes
-P4-008 (multi-plate grouping + the `storeThreeMFPlateIDs` toolchain-
-sensitivity fix) is implemented and fully tested (119/119, verified via
-clean rebuild + 5 repeated full-suite runs) but not yet committed/pushed
-as of this update — do that next.
+P4-009 (plate preview) is implemented and fully tested (122/122, 3
+repeated runs) but not yet committed/pushed as of this update.
 
 ## Known blockers
 None technical. P3-004 (multicolor painting) stays deferred per explicit
@@ -108,25 +80,28 @@ TODO.md P4/lowest-priority note. P4-002 manual repair remains conditional
 on observing a real mesh-repair need.
 
 ## Next recommended action
-1. Commit + push P4-008 (see Uncommitted changes above).
-2. P4-009: assembly previews — depends on P4-008 (now done). Upstream:
-   `GUI/Plater.cpp` plate/object preview rendering; low independent
-   value, consider whether it's worth a dedicated pass vs folding into
-   general viewport polish.
-3. P4-013: modifier meshes (can reuse the raycast + cut-plane gizmo infra).
-4. P3-004: multicolor/MMU painting — intentionally last (P4 priority).
-5. Minor pre-existing cleanup opportunity noticed but out of scope this
-   session: `SlicingEngine.autoArrange`'s `UnsafePointer(meshData.vertices)`/
-   `UnsafePointer(meshData.indices)` construction is the same class of
-   dangling-temporary-pointer compiler warning seen elsewhere in this
-   file — not yet reproduced as an actual failure, but worth an eventual
-   fix using `withNSA1SceneObjects` like other call sites already do.
+1. Commit + push P4-009 (see Uncommitted changes above).
+2. P4-013: modifier meshes (local per-volume config override) — can
+   reuse the raycast + cut-plane gizmo infra for placement, needs a
+   spatial lookup during slicing for the modifier region.
+3. P3-004: multicolor/MMU painting — intentionally last (P4 priority).
+4. Phase 4 Geometry is otherwise complete; after P4-013, the natural
+   next phase is Phase 5 (Online Models) — but P5-001 flags a real
+   licensing/ToS risk requiring a design decision (delegate auth to
+   system browser) before implementation, not during.
+5. Minor pre-existing cleanup opportunity, still not yet addressed:
+   `SlicingEngine.autoArrange`'s `UnsafePointer(meshData.vertices)`/
+   `UnsafePointer(meshData.indices)` construction triggers the same
+   dangling-temporary-pointer compiler warning seen (and fixed) in
+   `cutModel` this session — not yet reproduced as an actual failure,
+   worth an eventual fix using `withNSA1SceneObjects` like other call
+   sites already do.
 
 ## Relevant commands
 - `swift build` / `swift test` / `swift run NativeSlicerA1`
+- `swift test --filter PlatePreviewTests` — 3 real plate-preview tests
 - `swift test --filter MultiPlateTests` — 5 real multi-plate tests
 - `swift test --filter CutModelTests` — 7 real cut/connector-boolean tests
-- `swift test --filter CutPlaneTests` — connector placement transform test
 - `swift test --filter ProjectDocumentCutTests` — 9 real cut/connector/undo tests
 - `swift test --filter CutGroupIDPersistenceTests` — 2 real cut_id/3MF tests
 - `swift test --filter ConnectorTests` — 6 real connector-mesh tests

@@ -327,6 +327,33 @@ final class ProjectDocument: ObservableObject {
         objects.filter { $0.plateID == activePlateID }
     }
 
+    /// P4-009: real per-object world-space XY footprint on the active
+    /// plate, projected into bed-relative coordinates (bed origin at
+    /// its own corner, matching the A1's real coordinate convention) —
+    /// what a 2D plate preview/thumbnail needs, and a real "does this
+    /// fit on the bed" check, not placeholder rendering. Reuses the
+    /// same real `worldBoundingBox` the P4-006 cut plane already uses.
+    struct PlatePreviewEntry {
+        let objectID: UUID
+        let minX: Float
+        let minY: Float
+        let maxX: Float
+        let maxY: Float
+        let withinBed: Bool
+    }
+
+    func platePreview(bedWidth: Float, bedHeight: Float) -> [PlatePreviewEntry] {
+        objectsOnActivePlate.compactMap { object in
+            guard let box = worldBoundingBox(for: object) else { return nil }
+            let withinBed = box.min.x >= 0 && box.min.y >= 0 && box.max.x <= bedWidth && box.max.y <= bedHeight
+            return PlatePreviewEntry(
+                objectID: object.id,
+                minX: box.min.x, minY: box.min.y, maxX: box.max.x, maxY: box.max.y,
+                withinBed: withinBed
+            )
+        }
+    }
+
     /// Creates a new empty plate and returns its id; does not switch
     /// `activePlateID` (callers choose when to switch, matching
     /// `addConnector`/other explicit-mutation methods in this file).

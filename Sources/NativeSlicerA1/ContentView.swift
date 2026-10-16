@@ -6,6 +6,7 @@ struct ContentView: View {
     @State private var showingCalibration = false
     @State private var showingSettings = false
     @State private var showingLayerHeights = false
+    @State private var showingPlatePreview = false
 
     var body: some View {
         NavigationSplitView {
@@ -27,6 +28,7 @@ struct ContentView: View {
                 Button("Settings…") { showingSettings = true }
                 Button("Layer Heights…") { showingLayerHeights = true }
                     .disabled(document.selection == nil)
+                Button("Plates (\(document.plates.count))…") { showingPlatePreview = true }
                 Button(document.isSlicing ? "Slicing…" : "Slice", action: document.slice)
                 // G-code view mode picker (P1-012)
                 Menu("View Mode") {
@@ -128,6 +130,9 @@ struct ContentView: View {
         }
         .sheet(isPresented: $showingCalibration) {
             CalibrationView(document: document)
+        }
+        .sheet(isPresented: $showingPlatePreview) {
+            PlatePreviewView(document: document)
         }
         .alert("Error", isPresented: Binding(
             get: { document.lastError != nil },
