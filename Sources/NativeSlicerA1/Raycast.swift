@@ -71,3 +71,20 @@ func rayMeshIntersection(origin: SIMD3<Float>, direction: SIMD3<Float>, mesh: Lo
     }
     return hit
 }
+
+/// Intersects a forward ray with an infinite plane in world space. P4-006
+/// uses this for placing a connector exactly on the visible CutPlane
+/// overlay; unlike a mesh hit, this remains stable while the user tilts
+/// the plane. Parallel/behind-camera intersections return nil.
+func rayPlaneIntersection(
+    origin: SIMD3<Float>,
+    direction: SIMD3<Float>,
+    planePoint: SIMD3<Float>,
+    planeNormal: SIMD3<Float>
+) -> SIMD3<Float>? {
+    let denominator = dot(direction, planeNormal)
+    guard abs(denominator) > 1e-6 else { return nil }
+    let distance = dot(planePoint - origin, planeNormal) / denominator
+    guard distance > 1e-6 else { return nil }
+    return origin + direction * distance
+}

@@ -86,6 +86,27 @@ struct ContentView: View {
                         .frame(width: 80)
                     Slider(value: cutPlaneTiltYBinding, in: -(.pi / 4)...(.pi / 4)) { Text("Tilt Y") }
                         .frame(width: 80)
+                    Toggle("Place Connector", isOn: $document.connectorPlacementMode)
+                    if !document.cutConnectors.isEmpty {
+                        Picker("Connector", selection: $document.selectedCutConnectorID) {
+                            ForEach(Array(document.cutConnectors.enumerated()), id: \.element.id) { index, connector in
+                                Text("Connector \(index + 1)").tag(Optional(connector.id))
+                            }
+                        }
+                        .frame(width: 125)
+                        Picker("Type", selection: connectorTypeBinding) {
+                            ForEach(ConnectorType.allCases, id: \.self) { type in
+                                Text(String(describing: type).capitalized).tag(type)
+                            }
+                        }
+                        .frame(width: 105)
+                        Slider(value: connectorRadiusBinding, in: 1...15) { Text("Radius") }
+                            .frame(width: 80)
+                        Slider(value: connectorHeightBinding, in: 2...30) { Text("Depth") }
+                            .frame(width: 80)
+                        Button("Delete Connector", role: .destructive, action: document.removeSelectedConnector)
+                            .disabled(document.selectedCutConnectorID == nil)
+                    }
                     Picker("Keep", selection: $document.cutKeepMode) {
                         Text("Both").tag(CutMode.both)
                         Text("Lower").tag(CutMode.lowerOnly)
@@ -137,6 +158,32 @@ struct ContentView: View {
             get: { document.cutPlane?.tiltY ?? 0 },
             set: { document.setCutPlaneTilt(y: $0) }
         )
+    }
+
+    private var connectorTypeBinding: Binding<ConnectorType> {
+        Binding(
+            get: { selectedConnector?.preset.type ?? .plug },
+            set: { type in document.updateSelectedConnector { $0.preset.type = type } }
+        )
+    }
+
+    private var connectorRadiusBinding: Binding<Float> {
+        Binding(
+            get: { selectedConnector?.preset.radius ?? 5 },
+            set: { radius in document.updateSelectedConnector { $0.preset.radius = radius } }
+        )
+    }
+
+    private var connectorHeightBinding: Binding<Float> {
+        Binding(
+            get: { selectedConnector?.preset.height ?? 10 },
+            set: { height in document.updateSelectedConnector { $0.preset.height = height } }
+        )
+    }
+
+    private var selectedConnector: CutConnectorPlacement? {
+        guard let id = document.selectedCutConnectorID else { return nil }
+        return document.cutConnectors.first(where: { $0.id == id })
     }
 
     private func importModel() {

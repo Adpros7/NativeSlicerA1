@@ -34,6 +34,7 @@ enum ConnectorShape: Int32, CaseIterable, Sendable {
 /// matching upstream's `CutConnector`/`apply_tolerance` (CutUtils.cpp).
 struct ConnectorPreset: Equatable, Sendable {
     var type: ConnectorType
+
     var style: ConnectorStyle
     var shape: ConnectorShape
     /// Peg/hole radius in mm.
@@ -63,6 +64,23 @@ struct ConnectorPreset: Equatable, Sendable {
         self.height = height
         self.radiusTolerance = radiusTolerance
         self.heightTolerance = heightTolerance
+    }
+}
+/// One editable connector placement on the active cut plane (P4-006).
+/// `position` is world-space — the same convention as `CutPlane.center`
+/// and the real `ModelObject::cut` plane points — while `preset` contains
+/// the upstream connector generator and tolerance parameters. This stays
+/// separate from `SceneObject` because placements are pending cut-tool
+/// input, not a destructive edit to source mesh geometry.
+struct CutConnectorPlacement: Identifiable, Equatable {
+    let id: UUID
+    var position: SIMD3<Float>
+    var preset: ConnectorPreset
+
+    init(id: UUID = UUID(), position: SIMD3<Float>, preset: ConnectorPreset = ConnectorPreset()) {
+        self.id = id
+        self.position = position
+        self.preset = preset
     }
 }
 

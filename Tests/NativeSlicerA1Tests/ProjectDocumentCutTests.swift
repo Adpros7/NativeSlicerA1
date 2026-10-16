@@ -95,4 +95,85 @@ final class ProjectDocumentCutTests: XCTestCase {
         XCTAssertNil(document.lastError)
         XCTAssertEqual(document.objects.count, 1)
     }
+    /// P4-006's connector placement state is owned by the active cut
+    /// session, not baked into source mesh geometry: adding a preset at a
+    /// real cut-plane point selects it, and deleting it removes only that
+    /// placement. The actual mesh remains untouched until `performCut()`
+    /// sends placements to the upstream cut pipeline.
+    func testCutPlaneOwnsEditableConnectorPlacements() throws {
+        let document = ProjectDocument()
+        importDirectly(cubeMesh(), into: document)
+        document.selection = document.objects[0].id
+        document.cutPlaneMode = true
+        document.addConnector(at: SIMD3(10, 10, 7))
+
+        let connector = try XCTUnwrap(document.cutConnectors.first)
+        XCTAssertEqual(connector.position, SIMD3(10, 10, 7))
+        XCTAssertEqual(connector.preset.type, .plug)
+        XCTAssertEqual(document.selectedCutConnectorID, connector.id)
+
+        document.removeSelectedConnector()
+        XCTAssertTrue(document.cutConnectors.isEmpty)
+        XCTAssertNil(document.selectedCutConnectorID)
+    }
+
+    /// Editing the selected placement must update only that pending
+    /// connector's real-engine preset fields; it must not create another
+    /// connector or alter its plane point.
+    func testEditingSelectedConnectorKeepsItsPlacement() throws {
+        let document = ProjectDocument()
+        importDirectly(cubeMesh(), into: document)
+        document.selection = document.objects[0].id
+        document.cutPlaneMode = true
+        document.addConnector(at: SIMD3(3, 4, 5))
+        document.updateSelectedConnector {
+            $0.preset.type = .thread
+            $0.preset.radius = 7
+            $0.preset.height = 14
+        }
+
+        let connector = try XCTUnwrap(document.cutConnectors.first)
+        XCTAssertEqual(document.cutConnectors.count, 1)
+        XCTAssertEqual(connector.position, SIMD3(3, 4, 5))
+        XCTAssertEqual(connector.preset.type, .thread)
+        XCTAssertEqual(connector.preset.radius, 7)
+        XCTAssertEqual(connector.preset.height, 14)
+    }
+
+    /// End-to-end P4-006: a connector placed in the active document is
+    /// passed through `performCut()` into the real upstream MeshBoolean
+    /// connector pipeline — result mesh volume changes because a real
+    /// peg/hole pair is baked, proving it is not preview-only state.
+    func testPerformCutBakesPlacedConnectorIntoResultMeshes() throws {
+        let document = ProjectDocument()
+        importDirectly(cubeMesh(), into: document)
+        document.selection = document.objects[0].id
+        document.cutPlaneMode = true
+        document.setCutPlaneCenter(SIMD3(10, 10, 10))
+        document.addConnector(at: SIMD3(10, 10, 10))
+
+        document.performCut()
+
+        XCTAssertNil(document.lastError)
+        XCTAssertEqual(document.objects.count, 2)
+        let resultVolume = document.objects.reduce(Float(0)) { total, object in
+            total + meshVolume(try! XCTUnwrap(document.mesh(for: object)))
+        }
+        XCTAssertGreaterThan(resultVolume, 8001)
+    }
+
+    private func meshVolume(_ mesh: LoadedMesh) -> Float {
+        var volume: Float = 0
+        var i = 0
+        while i < mesh.indices.count {
+            func vertex(_ index: UInt32) -> SIMD3<Float> {
+                let offset = Int(index) * 3
+                return SIMD3(mesh.vertices[offset], mesh.vertices[offset + 1], mesh.vertices[offset + 2])
+            }
+            volume += simd_dot(vertex(mesh.indices[i]), simd_cross(vertex(mesh.indices[i + 1]), vertex(mesh.indices[i + 2]))) / 6
+            i += 3
+        }
+        return abs(volume)
+    }
+
 }

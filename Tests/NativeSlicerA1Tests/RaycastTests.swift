@@ -36,4 +36,26 @@ final class RaycastTests: XCTestCase {
             mesh: singleTriangle()
         ))
     }
+
+    /// P4-006: connector placement must intersect the actual visible cut
+    /// plane, not the selected object's surface. A forward ray intersects
+    /// a plane at the exact expected world-space point; a parallel ray
+    /// has no stable placement point and is rejected.
+    func testRayPlaneIntersectionFindsForwardHitAndRejectsParallelRay() {
+        XCTAssertEqual(
+            rayPlaneIntersection(
+                origin: SIMD3<Float>(2, 3, 10),
+                direction: SIMD3<Float>(0, 0, -1),
+                planePoint: SIMD3<Float>(0, 0, 4),
+                planeNormal: SIMD3<Float>(0, 0, 1)
+            ),
+            SIMD3<Float>(2, 3, 4)
+        )
+        XCTAssertNil(rayPlaneIntersection(
+            origin: SIMD3<Float>(0, 0, 10),
+            direction: SIMD3<Float>(1, 0, 0),
+            planePoint: .zero,
+            planeNormal: SIMD3<Float>(0, 0, 1)
+        ))
+    }
 }

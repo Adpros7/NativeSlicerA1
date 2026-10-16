@@ -388,9 +388,28 @@ typedef struct {
     double x, y, z;
 } NSA1Vec3d;
 
+/// One pending P4-006 cut connector. Position and normal are WORLD-space
+/// (same convention as `NSA1CutRequest::plane_points`); type/style/shape
+/// follow `CutConnectorType`/`Style`/`Shape` numeric order documented by
+/// `nsa1_make_connector_mesh`. Radius/height/tolerances are mm and match
+/// `CutConnector`/`CutUtils.cpp` semantics.
+typedef struct {
+    NSA1Vec3d position;
+    NSA1Vec3d normal;
+    int32_t type;
+    int32_t style;
+    int32_t shape;
+    float radius;
+    float height;
+    float radius_tolerance;
+    float height_tolerance;
+} NSA1CutConnector;
+
 typedef struct {
     NSA1Vec3d plane_points[4];
     int cut_mode;  // 0=both, 1=lower, 2=upper
+    const NSA1CutConnector *connectors; // optional; NULL if connector_count=0
+    size_t connector_count;
 } NSA1CutRequest;
 
 int nsa1_cut_model(

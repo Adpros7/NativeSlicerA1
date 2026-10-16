@@ -234,6 +234,31 @@ final class CutModelTests: XCTestCase {
         let (lo, hi) = worldBoundingBox(results[0].mesh, results[0].transform)
         assertEqual(hi - lo, SIMD3(20, 20, 20), accuracy: 0.01)
     }
+
+    /// P4-006 integration: a real Plug connector must be materialized
+    /// into the returned cut geometry, not just drawn as a viewport
+    /// preview. Its toleranced female hole subtracts material from one
+    /// half while its matching male peg protrudes from the other; the
+    /// exposed peg volume means combined printed geometry is measurably
+    /// GREATER than the unmodified cube (the actual physical connector
+    /// pair, not a config echo or fake preview).
+    func testPlugConnectorBakesTolerancedHoleAndPegIntoCutResults() throws {
+        let originalVolume = meshVolume(cubeMesh())
+        let preset = ConnectorPreset(
+            type: .plug, style: .prizm, shape: .circle,
+            radius: 3, height: 10, radiusTolerance: 0.5, heightTolerance: 1
+        )
+        let results = try SlicingEngine.cutModel(
+            objects: [(mesh: cubeMesh(), transform: matrix_identity_float4x4)],
+            planePoints: horizontalPlane(atZ: 10),
+            cutMode: .both,
+            connectors: [(position: SIMD3(10, 10, 10), normal: SIMD3(0, 0, 1), preset: preset)]
+        )
+
+        XCTAssertEqual(results.count, 2)
+        let connectorVolume = results.reduce(Float(0)) { $0 + meshVolume($1.mesh) }
+        XCTAssertGreaterThan(connectorVolume, originalVolume + 1, "real connector peg/hole must alter returned cut geometry")
+    }
 }
 
 private func assertEqual(_ a: SIMD3<Float>, _ b: SIMD3<Float>, accuracy: Float, file: StaticString = #filePath, line: UInt = #line) {

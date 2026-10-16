@@ -88,11 +88,26 @@ final class ProjectDocument: ObservableObject {
     /// initializes one), and which parts to keep on `performCut()`.
     @Published var cutPlaneMode = false {
         didSet {
-            if cutPlaneMode { beginCutPlane() } else { cutPlane = nil }
+            if cutPlaneMode {
+                beginCutPlane()
+            } else {
+                cutPlane = nil
+                cutConnectors = []
+                selectedCutConnectorID = nil
+                connectorPlacementMode = false
+            }
         }
     }
     @Published var cutPlane: CutPlane?
     @Published var cutKeepMode: CutMode = .both
+    /// P4-006 pending connector inputs for the active cut only. These
+    /// become real upstream cut-connector volumes at cut time; source
+    /// mesh data remains untouched while editing them.
+    @Published private(set) var cutConnectors: [CutConnectorPlacement] = []
+    @Published var selectedCutConnectorID: UUID?
+    /// Routes the next viewport click to the active plane instead of
+    /// moving the plane itself: each click adds one connector placement.
+    @Published var connectorPlacementMode = false
 
     /// Initializes `cutPlane` centered on the selected object's own
     /// world-space bounding box center, flat (no tilt), sized to
@@ -118,6 +133,29 @@ final class ProjectDocument: ObservableObject {
         if let y { cutPlane?.tiltY = y }
     }
 
+    /// Adds a default real-engine connector preset at a world-space point
+    /// on the active cut plane, selects it for property editing, and
+    /// leaves the source object/mesh non-destructively unchanged.
+    func addConnector(at position: SIMD3<Float>) {
+        guard cutPlane != nil else { return }
+        let connector = CutConnectorPlacement(position: position)
+        cutConnectors.append(connector)
+        selectedCutConnectorID = connector.id
+    }
+
+    func removeSelectedConnector() {
+        guard let selectedCutConnectorID else { return }
+        cutConnectors.removeAll { $0.id == selectedCutConnectorID }
+        self.selectedCutConnectorID = nil
+    }
+
+    func updateSelectedConnector(_ update: (inout CutConnectorPlacement) -> Void) {
+        guard let id = selectedCutConnectorID,
+              let index = cutConnectors.firstIndex(where: { $0.id == id })
+        else { return }
+        update(&cutConnectors[index])
+    }
+
     /// Performs the real cut (P4-006) via `SlicingEngine.cutModel` using
     /// the current `cutPlane`/`cutKeepMode`, replacing the selected
     /// object with the real resulting part(s) — matching the real
@@ -135,11 +173,14 @@ final class ProjectDocument: ObservableObject {
               let mesh = meshes[objects[index].sourceMeshID]
         else { return }
         let transform = objects[index].transform.matrix
+        let connectorInputs: [(position: SIMD3<Float>, normal: SIMD3<Float>, preset: ConnectorPreset)] =
+            cutConnectors.map { (position: $0.position, normal: plane.normal, preset: $0.preset) }
         do {
             let results = try SlicingEngine.cutModel(
                 objects: [(mesh: mesh, transform: transform)],
                 planePoints: plane.planePoints,
-                cutMode: cutKeepMode
+                cutMode: cutKeepMode,
+                connectors: connectorInputs
             )
             guard !results.isEmpty else {
                 lastError = "Cut produced no geometry — check the plane actually intersects the object."

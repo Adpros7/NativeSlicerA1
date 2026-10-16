@@ -808,7 +808,8 @@ enum SlicingEngine {
     static func cutModel(
         objects: [(mesh: LoadedMesh, transform: simd_float4x4)],
         planePoints: [(Float, Float, Float)],
-        cutMode: CutMode
+        cutMode: CutMode,
+        connectors: [(position: SIMD3<Float>, normal: SIMD3<Float>, preset: ConnectorPreset)] = []
     ) throws -> [(mesh: LoadedMesh, transform: simd_float4x4)] {
         guard planePoints.count == 4 else {
             throw SlicingEngineError.sliceFailed("cut plane requires exactly 4 points")
@@ -822,8 +823,23 @@ enum SlicingEngine {
                 NSA1Vec3d(x: Double(planePoints[2].0), y: Double(planePoints[2].1), z: Double(planePoints[2].2)),
                 NSA1Vec3d(x: Double(planePoints[3].0), y: Double(planePoints[3].1), z: Double(planePoints[3].2))
             ),
-            cut_mode: cutMode.rawValue
+            cut_mode: cutMode.rawValue,
+            connectors: nil,
+            connector_count: 0
         )
+        let rawConnectors = connectors.map { connector in
+            NSA1CutConnector(
+                position: NSA1Vec3d(x: Double(connector.position.x), y: Double(connector.position.y), z: Double(connector.position.z)),
+                normal: NSA1Vec3d(x: Double(connector.normal.x), y: Double(connector.normal.y), z: Double(connector.normal.z)),
+                type: connector.preset.type.rawValue,
+                style: connector.preset.style.rawValue,
+                shape: connector.preset.shape.rawValue,
+                radius: connector.preset.radius,
+                height: connector.preset.height,
+                radius_tolerance: connector.preset.radiusTolerance,
+                height_tolerance: connector.preset.heightTolerance
+            )
+        }
 
         let pending = objects.map { object in
             PendingSceneObject(
@@ -836,8 +852,12 @@ enum SlicingEngine {
         var resultCount: Int = 0
         var rawError: UnsafeMutablePointer<CChar>? = nil
 
-        let status = withNSA1SceneObjects(pending) { objPtr, objCount in
-            nsa1_cut_model(objPtr, objCount, &cutRequest, &rawResultPtr, &resultCount, &rawError)
+        let status = rawConnectors.withUnsafeBufferPointer { connectorBuffer in
+            cutRequest.connectors = connectorBuffer.baseAddress
+            cutRequest.connector_count = connectorBuffer.count
+            return withNSA1SceneObjects(pending) { objPtr, objCount in
+                nsa1_cut_model(objPtr, objCount, &cutRequest, &rawResultPtr, &resultCount, &rawError)
+            }
         }
 
         if let rawError {

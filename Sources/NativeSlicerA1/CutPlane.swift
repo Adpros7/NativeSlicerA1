@@ -53,4 +53,18 @@ struct CutPlane: Equatable {
         segments.append((center, center + normal * (halfExtent * 0.3)))
         return segments
     }
+
+    /// Places a real upstream connector mesh (whose local generator
+    /// convention is z=0...height) symmetrically across this plane:
+    /// local +Z aligns with the plane normal and its z=height/2 midpoint
+    /// is exactly at the clicked plane point. Used by the Metal preview;
+    /// the same world point/normal are converted to the C-ABI connector
+    /// request at cut time.
+    func connectorTransform(at position: SIMD3<Float>, preset: ConnectorPreset) -> simd_float4x4 {
+        let rotation = simd_quatf(from: SIMD3<Float>(0, 0, 1), to: normal)
+        var transform = simd_float4x4(rotation)
+        let offset = position - normal * (preset.height * 0.5)
+        transform.columns.3 = SIMD4(offset.x, offset.y, offset.z, 1)
+        return transform
+    }
 }

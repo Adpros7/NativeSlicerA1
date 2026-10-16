@@ -17,6 +17,7 @@
 #include "libslic3r/PrintConfig.hpp"
 #include "libslic3r/miniz_extension.hpp"
 #include "libslic3r/Format/STEP.hpp"
+#include "libslic3r/MeshBoolean.hpp"
 #include "libslic3r/Orient.hpp"
 #include "libslic3r/Arrange.hpp"
 #include "libslic3r/Geometry/ConvexHull.hpp"
@@ -614,6 +615,64 @@ NSA1SceneObject *scene_object_from_model_object(const Slic3r::ModelObject &obj) 
     return scene_obj;
 }
 
+// P4-006 connector results are baked Boolean meshes in world space: unlike
+// plain cut results they must preserve real holes/pegs in one flat mesh
+// because NSA1SceneObject currently exposes one model-part mesh, not an
+// arbitrary BambuStudio volume/modifier graph. Their instance transform is
+// therefore identity/null by design.
+NSA1SceneObject *scene_object_from_baked_mesh(const Slic3r::TriangleMesh &mesh) {
+    NSA1Mesh *mesh_data = copy_mesh(mesh);
+    auto *scene_obj = static_cast<NSA1SceneObject *>(malloc(sizeof(NSA1SceneObject)));
+    scene_obj->vertices = mesh_data->vertices;
+    scene_obj->vertex_count = mesh_data->vertex_count;
+    scene_obj->indices = mesh_data->indices;
+    scene_obj->index_count = mesh_data->index_count;
+    scene_obj->matrix16 = nullptr;
+    scene_obj->paint_data = nullptr;
+    scene_obj->paint_data_size = 0;
+    scene_obj->layer_height_ranges = nullptr;
+    scene_obj->layer_height_range_count = 0;
+    delete mesh_data; // transfer vertices/indices ownership to scene_obj
+    return scene_obj;
+}
+
+Slic3r::TriangleMesh cut_connector_mesh(const NSA1CutConnector &connector, bool hole) {
+    using namespace Slic3r;
+    if (connector.type < 0 || connector.type > static_cast<int32_t>(CutConnectorType::Thread) ||
+        connector.style < 0 || connector.style > static_cast<int32_t>(CutConnectorStyle::Frustum) ||
+        connector.shape < 0 || connector.shape > static_cast<int32_t>(CutConnectorShape::Circle))
+        throw std::invalid_argument("invalid connector preset");
+
+    CutConnectorAttributes attributes{
+        static_cast<CutConnectorType>(connector.type),
+        static_cast<CutConnectorStyle>(connector.style),
+        static_cast<CutConnectorShape>(connector.shape)};
+    TriangleMesh mesh(ModelObject::get_connector_mesh(attributes, CutConnectorParas{}));
+
+    Vec3d normal(connector.normal.x, connector.normal.y, connector.normal.z);
+    if (normal.norm() <= 1e-9)
+        throw std::invalid_argument("connector normal must be nonzero");
+    normal.normalize();
+    Matrix3d rotation;
+    Vec3d axis;
+    double angle;
+    Geometry::rotation_from_two_vectors(Vec3d::UnitZ(), normal, axis, angle, &rotation);
+
+    const double radius = double(connector.radius) + (hole ? double(connector.radius_tolerance) : 0.0);
+    const double height = double(connector.height) + (hole ? double(connector.height_tolerance) : 0.0);
+    if (radius <= 0.0 || height <= 0.0)
+        throw std::invalid_argument("connector radius and height must be positive");
+
+    const Vec3d center(connector.position.x, connector.position.y, connector.position.z);
+    const Vec3d base = center - normal * (0.5 * height);
+    const Transform3d transform =
+        Geometry::translation_transform(base) *
+        Transform3d(rotation) *
+        Geometry::scale_transform(Vec3d(radius, radius, height));
+    mesh.transform(transform, true);
+    return mesh;
+}
+
 /// Releases an array returned by `nsa1_cut_model`'s `out_objects`: each
 /// entry's `vertices`/`indices` (heap-allocated by `copy_mesh` via
 /// `new[]`), `matrix16` (malloc'd), the entry struct itself (malloc'd),
@@ -670,27 +729,78 @@ extern "C" int nsa1_cut_model(
         // seam_facets/mmu_segmentation_facets on `this` as a side
         // effect, and apply_cut_attributes only assigns a real cut_id
         // when both KeepUpper and KeepLower are set in the SAME call.
+        const bool has_connectors = cut_request->connector_count > 0;
+        if (has_connectors && cut_request->connectors == nullptr)
+            throw std::invalid_argument("connector_count requires connectors data");
+
         std::vector<Slic3r::ModelObject *> all_parts;
         Slic3r::ModelObjectCutAttributes attribute = Slic3r::ModelObjectCutAttribute::KeepLower;
-        if (cut_request->cut_mode == 2) attribute = Slic3r::ModelObjectCutAttributes(Slic3r::ModelObjectCutAttribute::KeepUpper);
-        else if (cut_request->cut_mode == 0) attribute = Slic3r::ModelObjectCutAttribute::KeepLower | Slic3r::ModelObjectCutAttribute::KeepUpper;
+        if (cut_request->cut_mode == 2)
+            attribute = Slic3r::ModelObjectCutAttributes(Slic3r::ModelObjectCutAttribute::KeepUpper);
+        else if (cut_request->cut_mode == 0)
+            attribute = Slic3r::ModelObjectCutAttribute::KeepLower | Slic3r::ModelObjectCutAttribute::KeepUpper;
+
+        // A connector is a mating pair, so match BambuStudio's actual
+        // Advanced Cut behavior: keep both pieces even if the UI's plain
+        // cut selection requested one side. Returning only one side would
+        // silently discard either the peg or the toleranced hole.
+        if (has_connectors)
+            attribute = Slic3r::ModelObjectCutAttribute::KeepLower | Slic3r::ModelObjectCutAttribute::KeepUpper;
+
         {
             auto parts = model.objects.front()->cut(0, plane, attribute);
             for (auto *part : parts) all_parts.push_back(part);
         }
 
-        // Convert result to NSA1SceneObject array
-        *out_object_count = all_parts.size();
-        if (*out_object_count == 0) {
+        if (all_parts.empty()) {
             *out_objects = nullptr;
+            *out_object_count = 0;
             return 0;
         }
 
+        std::vector<NSA1SceneObject *> output;
+        output.reserve(all_parts.size());
+        if (!has_connectors) {
+            for (auto *part : all_parts)
+                output.push_back(scene_object_from_model_object(*part));
+        } else {
+            if (all_parts.size() != 2)
+                throw std::runtime_error("connector cut did not produce upper and lower parts");
+
+            // `ModelObject::cut`'s upstream result order is upper then
+            // lower (Model.cpp:2548-2558). Our flat C ABI cannot retain
+            // BambuStudio's negative/model-part modifier volumes, so bake
+            // the exact upstream connector generator meshes using its
+            // mature CGAL Boolean engine: toleranced hole subtracted from
+            // upper, matching peg unioned to lower. This preserves real
+            // connector geometry in the returned one-mesh-per-object
+            // contract instead of losing modifier volumes on the Swift
+            // boundary.
+            Slic3r::TriangleMesh upper = all_parts[0]->mesh();
+            Slic3r::TriangleMesh lower = all_parts[1]->mesh();
+            // Standard binary STL often represents every facet with its
+            // own three vertex records. This is valid imported source
+            // geometry and we never mutate it, but CGAL's Boolean input
+            // needs a connected indexed surface. Merge exact coincident
+            // vertices only on these freshly-created, transient CUT
+            // RESULT copies (TriangleMesh.cpp's proven helper; no mesh
+            // repair of the source model) before the real Boolean.
+            Slic3r::its_merge_vertices(upper.its);
+            Slic3r::its_merge_vertices(lower.its);
+            for (size_t i = 0; i < cut_request->connector_count; ++i) {
+                const NSA1CutConnector &connector = cut_request->connectors[i];
+                Slic3r::MeshBoolean::cgal::minus(upper, cut_connector_mesh(connector, true));
+                Slic3r::MeshBoolean::cgal::plus(lower, cut_connector_mesh(connector, false));
+            }
+            output.push_back(scene_object_from_baked_mesh(upper));
+            output.push_back(scene_object_from_baked_mesh(lower));
+        }
+
+        *out_object_count = output.size();
         *out_objects = static_cast<NSA1SceneObject **>(
             malloc(sizeof(NSA1SceneObject *) * *out_object_count));
-        for (size_t i = 0; i < *out_object_count; ++i) {
-            (*out_objects)[i] = scene_object_from_model_object(*all_parts[i]);
-        }
+        for (size_t i = 0; i < *out_object_count; ++i)
+            (*out_objects)[i] = output[i];
 
         return 0;
     } catch (const std::exception &e) {

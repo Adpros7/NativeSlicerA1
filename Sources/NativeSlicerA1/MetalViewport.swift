@@ -17,6 +17,17 @@ struct RenderObject {
     let meshID: UUID
     let transform: simd_float4x4
     let selected: Bool
+    /// Explicit color for transient gizmo geometry (P4-006 connectors);
+    /// nil preserves the standard selected/unselected scene colors.
+    let color: SIMD4<Float>?
+
+    init(id: UUID, meshID: UUID, transform: simd_float4x4, selected: Bool, color: SIMD4<Float>? = nil) {
+        self.id = id
+        self.meshID = meshID
+        self.transform = transform
+        self.selected = selected
+        self.color = color
+    }
 }
 
 /// Must mirror `ToolpathUniforms` in `Shaders.swift`'s MSL source.
@@ -158,6 +169,18 @@ final class MetalRenderer: NSObject, MTKViewDelegate {
         cutPlaneBuffer = device.makeBuffer(bytes: floats, length: floats.count * MemoryLayout<Float>.stride, options: .storageModeShared)
         cutPlaneVertexCount = segments.count * 2
     }
+
+    /// Replaces a small dynamic mesh buffer (P4-006 connector preview).
+    /// Connector preset/property edits must redraw the actual upstream
+    /// generated mesh immediately, unlike imported source meshes whose
+    /// immutable GPU buffers stay cached via `ensureBuffer`.
+    func updateBuffer(for meshID: UUID, mesh: LoadedMesh) {
+        guard
+            let vertexBuffer = device.makeBuffer(bytes: mesh.vertices, length: mesh.vertices.count * MemoryLayout<Float>.stride, options: .storageModeShared),
+            let indexBuffer = device.makeBuffer(bytes: mesh.indices, length: mesh.indices.count * MemoryLayout<UInt32>.stride, options: .storageModeShared)
+        else { return }
+        meshBuffers[meshID] = GPUMesh(vertexBuffer: vertexBuffer, indexBuffer: indexBuffer, indexCount: mesh.indices.count)
+    }
     /// Uploads a GPU buffer pair for `mesh` if `meshID` isn't cached yet.
     func ensureBuffer(for meshID: UUID, mesh: LoadedMesh) {
         guard meshBuffers[meshID] == nil else { return }
@@ -195,7 +218,7 @@ final class MetalRenderer: NSObject, MTKViewDelegate {
             var uniforms = Uniforms(
                 modelViewProjection: viewProjection * object.transform,
                 model: object.transform,
-                color: object.selected ? SIMD4(0.95, 0.65, 0.25, 1.0) : SIMD4(0.55, 0.6, 0.68, 1.0)
+                color: object.color ?? (object.selected ? SIMD4(0.95, 0.65, 0.25, 1.0) : SIMD4(0.55, 0.6, 0.68, 1.0))
             )
             encoder.setVertexBuffer(gpuMesh.vertexBuffer, offset: 0, index: 0)
             encoder.setVertexBytes(&uniforms, length: MemoryLayout<Uniforms>.stride, index: 1)
@@ -240,11 +263,16 @@ final class OrbitMTKView: MTKView {
     /// of orbiting (mirrors `isPaintMode`'s routing).
     var isCutPlaneMode = false
     var onCutPlaneClick: ((CGPoint) -> Void)?
+    /// P4-006: click the active plane to add one connector placement.
+    /// This takes priority over repositioning the plane itself.
+    var isConnectorPlacementMode = false
+    var onConnectorPlacementClick: ((CGPoint) -> Void)?
 
     override var acceptsFirstResponder: Bool { true }
 
     override func mouseDown(with event: NSEvent) {
         if isPaintMode { onPaintStroke?(flippedLocation(of: event)); return }
+        if isConnectorPlacementMode { onConnectorPlacementClick?(flippedLocation(of: event)); return }
         if isCutPlaneMode { onCutPlaneClick?(flippedLocation(of: event)) }
     }
 
@@ -252,6 +280,9 @@ final class OrbitMTKView: MTKView {
         if isPaintMode {
             onPaintStroke?(flippedLocation(of: event))
             return
+        }
+        if isConnectorPlacementMode {
+            return // one connector per explicit click, never brush-spam on drag
         }
         if isCutPlaneMode {
             onCutPlaneClick?(flippedLocation(of: event))
@@ -332,6 +363,15 @@ struct MetalViewport: NSViewRepresentable {
             let worldHit = SIMD3(worldHit4.x, worldHit4.y, worldHit4.z) / worldHit4.w
             document.setCutPlaneCenter(worldHit)
         }
+        view.onConnectorPlacementClick = { [weak renderer, weak view] screenPoint in
+            guard let renderer, let view, let plane = document.cutPlane else { return }
+            let ray = screenPointToRay(screenPoint: screenPoint, viewSize: view.bounds.size, camera: renderer.camera)
+            guard let position = rayPlaneIntersection(
+                origin: ray.origin, direction: ray.direction,
+                planePoint: plane.center, planeNormal: plane.normal
+            ) else { return }
+            document.addConnector(at: position)
+        }
         return view
     }
 
@@ -342,14 +382,39 @@ struct MetalViewport: NSViewRepresentable {
                 renderer.ensureBuffer(for: object.sourceMeshID, mesh: mesh)
             }
         }
-        renderer.pruneBuffers(keeping: Set(document.objects.map(\.sourceMeshID)))
-        renderer.renderObjects = document.objects.map {
-            RenderObject(id: $0.id, meshID: $0.sourceMeshID, transform: $0.transform.matrix, selected: $0.id == document.selection)
+        var liveMeshIDs = Set(document.objects.map(\.sourceMeshID))
+        var renderObjects = document.objects.map {
+            RenderObject(
+                id: $0.id, meshID: $0.sourceMeshID, transform: $0.transform.matrix,
+                selected: $0.id == document.selection, color: nil
+            )
         }
+        if document.cutPlaneMode, let plane = document.cutPlane {
+            for connector in document.cutConnectors {
+                guard let mesh = try? ConnectorMeshGenerator.generate(connector.preset, forHole: false) else { continue }
+                // A connector's placement UUID is a stable dynamic GPU
+                // mesh key. updateBuffer deliberately replaces it so an
+                // editable preset redraws the REAL upstream generated
+                // mesh on the next SwiftUI update.
+                renderer.updateBuffer(for: connector.id, mesh: mesh)
+                liveMeshIDs.insert(connector.id)
+                let isSelected = connector.id == document.selectedCutConnectorID
+                renderObjects.append(RenderObject(
+                    id: connector.id,
+                    meshID: connector.id,
+                    transform: plane.connectorTransform(at: connector.position, preset: connector.preset),
+                    selected: isSelected,
+                    color: isSelected ? SIMD4(1.0, 0.25, 0.1, 1.0) : SIMD4(0.15, 0.9, 0.35, 1.0)
+                ))
+            }
+        }
+        renderer.pruneBuffers(keeping: liveMeshIDs)
+        renderer.renderObjects = renderObjects
         let vm = document.toolpathViewMode
         renderer.setToolpath(document.toolpath, viewMode: vm)
         nsView.isPaintMode = document.paintMode
         nsView.isCutPlaneMode = document.cutPlaneMode
+        nsView.isConnectorPlacementMode = document.cutPlaneMode && document.connectorPlacementMode
         renderer.setCutPlane(document.cutPlaneMode ? document.cutPlane : nil)
     }
 }
