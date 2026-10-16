@@ -32,6 +32,35 @@ struct ContentView: View {
                             .foregroundColor(document.toolpathViewMode == mode ? .accentColor : .primary)
                     }
                 }
+                // P3-005 support-paint controls: toggle paint mode,
+                // brush type, brush radius. Click/drag in the viewport
+                // while active paints the real engine's TriangleSelector
+                // (via ProjectDocument.paintAt), picked up by the next
+                // Slice.
+                Toggle("Paint Support", isOn: $document.paintMode)
+                    .disabled(document.selection == nil)
+                if document.paintMode {
+                    Picker("Brush", selection: $document.paintType) {
+                        Text("Enforcer").tag(SupportPaintType.enforcer)
+                        Text("Blocker").tag(SupportPaintType.blocker)
+                    }
+                    .pickerStyle(.segmented)
+                    .frame(width: 160)
+                    Slider(value: $document.paintBrushRadius, in: 1...20) {
+                        Text("Radius")
+                    }
+                    .frame(width: 120)
+                    Text("\(document.paintBrushRadius, specifier: "%.1f")mm")
+                        .monospacedDigit()
+                    Button("Undo Paint") {
+                        if let selection = document.selection { document.undoPaint(for: selection) }
+                    }
+                    .disabled(document.selection.map(document.canUndoPaint(for:)) != true)
+                    Button("Redo Paint") {
+                        if let selection = document.selection { document.redoPaint(for: selection) }
+                    }
+                    .disabled(document.selection.map(document.canRedoPaint(for:)) != true)
+                }
             }
         }
         .sheet(isPresented: $showingSettings) {

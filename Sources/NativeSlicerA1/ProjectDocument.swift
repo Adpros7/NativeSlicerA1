@@ -21,6 +21,45 @@ final class ProjectDocument: ObservableObject {
     /// `load(from:)` via the 3MF project's embedded config.
     @Published var profileSelection = SlicingJob.ProfileSelection()
 
+
+    /// P3-005 support-paint UI state: whether the viewport is in paint
+    /// mode (click-drag paints instead of orbiting the camera), the
+    /// active brush radius (mm), and brush type.
+    @Published var paintMode = false
+    @Published var paintBrushRadius: Float = 5
+    @Published var paintType: SupportPaintType = .enforcer
+    /// Real `TriangleSelector`-backed paint session per object, created
+    /// lazily on first paint stroke. Absent entries mean "unpainted".
+    private var paintStates: [UUID: SupportPaintState] = [:]
+
+    /// Paints a spherical brush stroke at `localPoint` (the target
+    /// object's own local mesh coordinates, e.g. from
+    /// `rayMeshIntersection`) onto `objectID`'s real paint session,
+    /// creating one via `nsa1_paint_create` if this is its first stroke.
+    func paintAt(objectID: UUID, localPoint: SIMD3<Float>) {
+        guard let object = objects.first(where: { $0.id == objectID }), let mesh = meshes[object.sourceMeshID] else { return }
+        let state = paintStates[objectID] ?? SupportPaintState(mesh: mesh)
+        guard let state else { return }
+        paintStates[objectID] = state
+        state.paintSphere(center: localPoint, radius: paintBrushRadius, type: paintType)
+        objectWillChange.send()
+    }
+
+    /// Whether `objectID` has any painted support data.
+    func hasPaintData(for objectID: UUID) -> Bool { paintStates[objectID] != nil }
+
+    func canUndoPaint(for objectID: UUID) -> Bool { paintStates[objectID]?.canUndo == true }
+    func canRedoPaint(for objectID: UUID) -> Bool { paintStates[objectID]?.canRedo == true }
+
+    func undoPaint(for objectID: UUID) {
+        guard paintStates[objectID]?.undo() == true else { return }
+        objectWillChange.send()
+    }
+
+    func redoPaint(for objectID: UUID) {
+        guard paintStates[objectID]?.redo() == true else { return }
+        objectWillChange.send()
+    }
     func mesh(for object: SceneObject) -> LoadedMesh? { meshes[object.sourceMeshID] }
 
     /// Imports an STL or 3MF file, adding one scene object per mesh found
@@ -85,22 +124,27 @@ final class ProjectDocument: ObservableObject {
     func removeObject(_ objectID: UUID) {
         guard let object = objects.first(where: { $0.id == objectID }) else { return }
         objects.removeAll { $0.id == objectID }
+        paintStates.removeValue(forKey: objectID)
         meshes.removeValue(forKey: object.sourceMeshID)
         if selection == objectID { selection = nil }
     }
 
     /// Saves the scene as a 3MF project file via the real engine's
-    /// `store_3mf` (P1-007), including the resolved `profileSelection`
-    /// config (P3-003) so profile/override choices survive a reload.
+    /// `store_3mf`, including resolved profile config (P3-003) and
+    /// TriangleSelector-backed support paint (P3-005), so both profile
+    /// selection and painted facets survive a save/reload round trip.
     func save(to url: URL) {
-        let payload = objects.compactMap { object -> (mesh: LoadedMesh, transform: simd_float4x4)? in
-            guard let mesh = meshes[object.sourceMeshID] else { return nil }
-            return (mesh, object.transform.matrix)
+        var payload: [(mesh: LoadedMesh, transform: simd_float4x4)] = []
+        var paintData: [[UInt8]] = []
+        for object in objects {
+            guard let mesh = meshes[object.sourceMeshID] else { continue }
+            payload.append((mesh, object.transform.matrix))
+            paintData.append(paintStates[object.id]?.serialize() ?? [])
         }
         do {
             let loader = try BambuProfileLoader()
             let configEntries = try SlicingJob.resolvedConfigEntries(loader: loader, selection: profileSelection)
-            try SlicingEngine.storeThreeMF(atPath: url.path, objects: payload, configEntries: configEntries)
+            try SlicingEngine.storeThreeMF(atPath: url.path, objects: payload, configEntries: configEntries, paintData: paintData)
             lastError = nil
         } catch {
             lastError = "Save failed: \(error)"
@@ -115,8 +159,21 @@ final class ProjectDocument: ObservableObject {
         do {
             let loaded = try loadScene(at: url)
             let configEntries = SlicingEngine.loadThreeMFConfig(atPath: url.path)
+            var restoredPaintStates: [UUID: SupportPaintState] = [:]
+            if url.pathExtension.lowercased() == "3mf" {
+                for (index, object) in loaded.objects.enumerated() {
+                    let data = SlicingEngine.loadThreeMFPaint(atPath: url.path, objectIndex: index)
+                    guard !data.isEmpty,
+                          let mesh = loaded.meshes[object.sourceMeshID],
+                          let state = SupportPaintState(mesh: mesh),
+                          state.deserialize(data)
+                    else { continue }
+                    restoredPaintStates[object.id] = state
+                }
+            }
             meshes = loaded.meshes
             objects = loaded.objects
+            paintStates = restoredPaintStates
             selection = loaded.objects.last?.id
             profileSelection = SlicingJob.restoreSelection(from: configEntries)
             lastError = nil
@@ -133,16 +190,19 @@ final class ProjectDocument: ObservableObject {
     func slice() {
         guard !objects.isEmpty, !isSlicing else { return }
         isSlicing = true
-        let placed = objects.compactMap { object -> (mesh: LoadedMesh, transform: simd_float4x4)? in
-            guard let mesh = meshes[object.sourceMeshID] else { return nil }
-            return (mesh, object.transform.matrix)
+        var placed: [(mesh: LoadedMesh, transform: simd_float4x4)] = []
+        var paintData: [[UInt8]] = []
+        for object in objects {
+            guard let mesh = meshes[object.sourceMeshID] else { continue }
+            placed.append((mesh, object.transform.matrix))
+            paintData.append(paintStates[object.id]?.serialize() ?? [])
         }
         let selection = profileSelection
         let outputPath = FileManager.default.temporaryDirectory.appendingPathComponent("\(UUID().uuidString).gcode").path
         Task.detached { [weak self] in
             do {
                 let loader = try BambuProfileLoader()
-                let segments = try SlicingJob.slice(objects: placed, loader: loader, selection: selection, outputPath: outputPath)
+                let segments = try SlicingJob.slice(objects: placed, loader: loader, selection: selection, outputPath: outputPath, paintData: paintData)
                 await MainActor.run { [weak self] in
                     guard let self else { return }
                     self.toolpath = segments

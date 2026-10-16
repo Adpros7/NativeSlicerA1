@@ -398,34 +398,54 @@ extern "C" void nsa1_paint_sphere(
     }
 }
 
+std::pair<std::vector<std::pair<int, int>>, std::vector<bool>> decode_paint_data(
+    const uint8_t *data, size_t size);
+
+std::vector<uint8_t> encode_paint_data(
+    const std::pair<std::vector<std::pair<int, int>>, std::vector<bool>> &data) {
+    const auto &[pairs, bits] = data;
+    size_t bit_bytes = (bits.size() + 7) / 8;
+    size_t total = sizeof(uint32_t) + pairs.size() * 2 * sizeof(int32_t) + sizeof(uint32_t) + bit_bytes;
+    std::vector<uint8_t> buf(total);
+    size_t off = 0;
+    uint32_t num_pairs = static_cast<uint32_t>(pairs.size());
+    std::memcpy(buf.data() + off, &num_pairs, sizeof(num_pairs)); off += sizeof(num_pairs);
+    for (const auto &p : pairs) {
+        int32_t a = p.first, b = p.second;
+        std::memcpy(buf.data() + off, &a, sizeof(a)); off += sizeof(a);
+        std::memcpy(buf.data() + off, &b, sizeof(b)); off += sizeof(b);
+    }
+    uint32_t num_bits = static_cast<uint32_t>(bits.size());
+    std::memcpy(buf.data() + off, &num_bits, sizeof(num_bits)); off += sizeof(num_bits);
+    for (size_t i = 0; i < bits.size(); ++i) {
+        if (bits[i]) buf[off + i / 8] |= uint8_t(1u << (i % 8));
+    }
+    return buf;
+}
+
 extern "C" void nsa1_paint_serialize(NSA1PaintState *state, uint8_t **out_data, size_t *out_size) {
     *out_data = nullptr;
     *out_size = 0;
     if (state == nullptr) return;
     try {
-        auto [pairs, bits] = state->selector.serialize();
-        size_t bit_bytes = (bits.size() + 7) / 8;
-        size_t total = sizeof(uint32_t) + pairs.size() * 2 * sizeof(int32_t) + sizeof(uint32_t) + bit_bytes;
-        auto *buf = new uint8_t[total];
-        size_t off = 0;
-        uint32_t num_pairs = static_cast<uint32_t>(pairs.size());
-        std::memcpy(buf + off, &num_pairs, sizeof(num_pairs)); off += sizeof(num_pairs);
-        for (const auto &p : pairs) {
-            int32_t a = p.first, b = p.second;
-            std::memcpy(buf + off, &a, sizeof(a)); off += sizeof(a);
-            std::memcpy(buf + off, &b, sizeof(b)); off += sizeof(b);
-        }
-        uint32_t num_bits = static_cast<uint32_t>(bits.size());
-        std::memcpy(buf + off, &num_bits, sizeof(num_bits)); off += sizeof(num_bits);
-        std::fill(buf + off, buf + off + bit_bytes, 0);
-        for (size_t i = 0; i < bits.size(); ++i) {
-            if (bits[i]) buf[off + i / 8] |= uint8_t(1u << (i % 8));
-        }
+        std::vector<uint8_t> data = encode_paint_data(state->selector.serialize());
+        auto *buf = new uint8_t[data.size()];
+        std::memcpy(buf, data.data(), data.size());
         *out_data = buf;
-        *out_size = total;
+        *out_size = data.size();
     } catch (...) {
         *out_data = nullptr;
         *out_size = 0;
+    }
+}
+
+extern "C" int nsa1_paint_deserialize(NSA1PaintState *state, const uint8_t *data, size_t size) {
+    if (state == nullptr) return -1;
+    try {
+        state->selector.deserialize(decode_paint_data(data, size));
+        return 0;
+    } catch (...) {
+        return -1;
     }
 }
 
@@ -486,6 +506,27 @@ extern "C" NSA1Mesh *nsa1_load_3mf_mesh(const char *path, int64_t object_index) 
     return copy_mesh(mesh);
 }
 
+extern "C" uint8_t *nsa1_load_3mf_paint(const char *path, int64_t object_index, size_t *out_size) {
+    *out_size = 0;
+    Slic3r::Model model;
+    if (!load_3mf_model(path, model) || object_index < 0 || static_cast<size_t>(object_index) >= model.objects.size()) {
+        return nullptr;
+    }
+    const Slic3r::ModelObject *object = model.objects[static_cast<size_t>(object_index)];
+    if (object->volumes.empty()) return nullptr;
+    const auto &annotation = object->volumes.front()->supported_facets;
+    if (annotation.empty()) return nullptr;
+    try {
+        std::vector<uint8_t> data = encode_paint_data(annotation.get_data());
+        auto *out = new uint8_t[data.size()];
+        std::memcpy(out, data.data(), data.size());
+        *out_size = data.size();
+        return out;
+    } catch (...) {
+        return nullptr;
+    }
+}
+
 extern "C" int nsa1_3mf_object_matrix(const char *path, int64_t object_index, double *out_matrix16) {
     Slic3r::Model model;
     if (!load_3mf_model(path, model)) {
@@ -538,6 +579,8 @@ NSA1SceneObject *scene_object_from_model_object(const Slic3r::ModelObject &obj) 
     scene_obj->indices = mesh_data->indices;
     scene_obj->index_count = mesh_data->index_count;
     scene_obj->matrix16 = nullptr;
+    scene_obj->paint_data = nullptr;
+    scene_obj->paint_data_size = 0;
 
     nsa1_free_mesh(mesh_data);
     return scene_obj;

@@ -107,4 +107,55 @@ final class SupportPaintingTests: XCTestCase {
         let support = supportSegmentCount(try sliceCube(paintData: [serialized]))
         XCTAssertEqual(support, 0, "blocker-overwritten region must remove support entirely, back to the unpainted baseline")
     }
+
+    /// P3-005: real support paint survives a native 3MF save/reload via
+    /// upstream `FacetsAnnotation` serialization, then still changes the
+    /// real support-generation toolpath after loading.
+    func testSupportPaintPersistsThroughThreeMF() throws {
+        let mesh = flushCube()
+        guard let paintState = SupportPaintState(mesh: mesh) else {
+            XCTFail("nsa1_paint_create failed")
+            return
+        }
+        paintState.paintSphere(center: SIMD3<Float>(20, 10, 10), radius: 15, type: .enforcer)
+        let originalData = paintState.serialize()
+        XCTAssertFalse(originalData.isEmpty)
+
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let project = directory.appendingPathComponent("painted.3mf")
+
+        try SlicingEngine.storeThreeMF(
+            atPath: project.path,
+            objects: [(mesh: mesh, transform: matrix_identity_float4x4)],
+            configEntries: [],
+            paintData: [originalData]
+        )
+        let loadedData = SlicingEngine.loadThreeMFPaint(atPath: project.path, objectIndex: 0)
+        XCTAssertFalse(loadedData.isEmpty, "3MF reload must expose saved FacetsAnnotation data")
+
+        let support = supportSegmentCount(try sliceCube(paintData: [loadedData]))
+        XCTAssertGreaterThan(support, 0, "reloaded enforcer paint must still produce real support")
+    }
+
+    /// P3-005: each viewport brush stroke is undoable/redoable without
+    /// touching source mesh geometry. Undo restores a real zero-support
+    /// engine result; redo restores the real enforced-support result.
+    func testSupportPaintUndoRedoRestoresRealSupportOutput() throws {
+        let mesh = flushCube()
+        guard let paintState = SupportPaintState(mesh: mesh) else {
+            XCTFail("nsa1_paint_create failed")
+            return
+        }
+        paintState.paintSphere(center: SIMD3<Float>(20, 10, 10), radius: 15, type: .enforcer)
+        XCTAssertTrue(paintState.canUndo)
+        XCTAssertGreaterThan(supportSegmentCount(try sliceCube(paintData: [paintState.serialize()])), 0)
+
+        XCTAssertTrue(paintState.undo())
+        XCTAssertEqual(supportSegmentCount(try sliceCube(paintData: [paintState.serialize()])), 0)
+
+        XCTAssertTrue(paintState.redo())
+        XCTAssertGreaterThan(supportSegmentCount(try sliceCube(paintData: [paintState.serialize()])), 0)
+    }
 }

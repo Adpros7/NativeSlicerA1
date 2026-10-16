@@ -138,9 +138,10 @@ enum SlicingJob {
         objects: [(mesh: LoadedMesh, transform: simd_float4x4)],
         loader: BambuProfileLoader,
         selection: ProfileSelection = ProfileSelection(),
-        outputPath: String
+        outputPath: String,
+        paintData: [[UInt8]] = []
     ) throws -> [ToolpathSegment] {
         let entries = try resolvedConfigEntries(loader: loader, selection: selection)
-        return try SlicingEngine.sliceToGCode(objects: objects, configEntries: entries, outputPath: outputPath)
+        return try SlicingEngine.sliceToGCode(objects: objects, configEntries: entries, outputPath: outputPath, paintData: paintData)
     }
 }

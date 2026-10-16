@@ -198,10 +198,24 @@ final class MetalRenderer: NSObject, MTKViewDelegate {
 final class OrbitMTKView: MTKView {
     var onOrbit: ((Float, Float) -> Void)?
     var onZoom: ((Float) -> Void)?
+    /// P3-005: when true, clicks/drags paint instead of orbiting.
+    var isPaintMode = false
+    /// Called with the click/drag location in this view's own
+    /// (top-left-origin, AppKit-flipped) coordinate space.
+    var onPaintStroke: ((CGPoint) -> Void)?
 
     override var acceptsFirstResponder: Bool { true }
 
+    override func mouseDown(with event: NSEvent) {
+        guard isPaintMode else { return }
+        onPaintStroke?(flippedLocation(of: event))
+    }
+
     override func mouseDragged(with event: NSEvent) {
+        if isPaintMode {
+            onPaintStroke?(flippedLocation(of: event))
+            return
+        }
         let sensitivity: Float = 0.01
         onOrbit?(Float(event.deltaX) * sensitivity, Float(event.deltaY) * sensitivity)
     }
@@ -209,6 +223,13 @@ final class OrbitMTKView: MTKView {
     override func scrollWheel(with event: NSEvent) {
         let factor: Float = 1 + Float(event.scrollingDeltaY) * 0.01
         onZoom?(factor)
+    }
+
+    /// `NSView`'s event location is bottom-left-origin; `screenPointToRay`
+    /// expects top-left-origin (matching typical screen/UIKit convention).
+    private func flippedLocation(of event: NSEvent) -> CGPoint {
+        let p = convert(event.locationInWindow, from: nil)
+        return CGPoint(x: p.x, y: bounds.height - p.y)
     }
 }
 
@@ -236,6 +257,25 @@ struct MetalViewport: NSViewRepresentable {
             renderer?.camera.orbit(deltaAzimuth: deltaAzimuth, deltaElevation: deltaElevation)
         }
         view.onZoom = { [weak renderer] factor in renderer?.camera.zoom(by: factor) }
+        view.onPaintStroke = { [weak renderer, weak view] screenPoint in
+            guard let renderer, let view,
+                  let selectedID = document.selection,
+                  let object = document.objects.first(where: { $0.id == selectedID }),
+                  let mesh = document.mesh(for: object)
+            else { return }
+            let ray = screenPointToRay(screenPoint: screenPoint, viewSize: view.bounds.size, camera: renderer.camera)
+            // Transform the world-space ray into the object's local mesh
+            // space (inverse of its placement transform) so the real
+            // Möller–Trumbore test operates in the same space as the
+            // mesh's own vertex data.
+            let inverseTransform = object.transform.matrix.inverse
+            let localOrigin4 = inverseTransform * SIMD4(ray.origin, 1)
+            let localOrigin = SIMD3(localOrigin4.x, localOrigin4.y, localOrigin4.z) / localOrigin4.w
+            let localDir4 = inverseTransform * SIMD4(ray.direction, 0)
+            let localDir = normalize(SIMD3(localDir4.x, localDir4.y, localDir4.z))
+            guard let hit = rayMeshIntersection(origin: localOrigin, direction: localDir, mesh: mesh) else { return }
+            document.paintAt(objectID: selectedID, localPoint: hit)
+        }
         return view
     }
 
@@ -252,5 +292,6 @@ struct MetalViewport: NSViewRepresentable {
         }
         let vm = document.toolpathViewMode
         renderer.setToolpath(document.toolpath, viewMode: vm)
+        nsView.isPaintMode = document.paintMode
     }
 }

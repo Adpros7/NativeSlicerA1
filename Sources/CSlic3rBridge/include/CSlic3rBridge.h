@@ -75,6 +75,13 @@ int nsa1_auto_orient(const float *vertices, size_t vertex_count,
 int64_t nsa1_3mf_object_count(const char *path);
 
 NSA1Mesh *nsa1_load_3mf_mesh(const char *path, int64_t object_index);
+/// Loads support-paint annotations saved in a 3MF object's first model
+/// volume, serializing its real `FacetsAnnotation` into the same opaque
+/// byte format as `nsa1_paint_serialize`. Returns NULL/size=0 for an
+/// unpainted object or on failure; free non-NULL output with
+/// `nsa1_paint_data_free`.
+uint8_t *nsa1_load_3mf_paint(const char *path, int64_t object_index, size_t *out_size);
+
 /// `object_index` into `out_matrix16` (column-major 4x4, i.e. `v' = M*v`
 /// for column vectors — the same convention as Swift's `simd_float4x4`).
 /// Returns 0 on success, -1 on failure/out-of-range index.
@@ -144,6 +151,11 @@ void nsa1_paint_sphere(
 /// real engine's own `TriangleSelector::serialize()` format, flattened).
 /// `*out_data` is newly allocated; free with `nsa1_paint_data_free`.
 void nsa1_paint_serialize(NSA1PaintState *state, uint8_t **out_data, size_t *out_size);
+/// Replaces `state`'s paint contents with bytes returned by
+/// `nsa1_paint_serialize` (or loaded from a 3MF via
+/// `nsa1_load_3mf_paint`). Returns 0 on success, -1 for malformed data.
+int nsa1_paint_deserialize(NSA1PaintState *state, const uint8_t *data, size_t size);
+
 
 /// Releases a buffer returned by `nsa1_paint_serialize`.
 void nsa1_paint_data_free(uint8_t *data);

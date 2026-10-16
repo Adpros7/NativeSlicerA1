@@ -449,6 +449,19 @@ enum SlicingEngine {
         return convert(raw)
     }
 
+    /// Loads real support-paint annotations saved in a 3MF object's
+    /// first volume. The returned bytes are opaque TriangleSelector data
+    /// passed into `SupportPaintState.deserialize`; an empty array means
+    /// the object is unpainted.
+    static func loadThreeMFPaint(atPath path: String, objectIndex index: Int) -> [UInt8] {
+        var size: Int = 0
+        guard let raw = path.withCString({ nsa1_load_3mf_paint($0, Int64(index), &size) }), size > 0 else {
+            return []
+        }
+        defer { nsa1_paint_data_free(raw) }
+        return Array(UnsafeBufferPointer(start: raw, count: size))
+    }
+
     /// Reads the first instance's placement matrix of the model object at
     /// `index` from a 3MF file, via the real engine's `load_3mf`.
     static func threeMFObjectTransform(atPath path: String, objectIndex index: Int) throws -> simd_float4x4 {
@@ -466,9 +479,21 @@ enum SlicingEngine {
     /// project persistence, reusing the same writer BambuStudio/OrcaSlicer
     /// use, extended (P3-003) to also embed the full resolved config so
     /// profile/override selection survives a save/reload round trip.
-    static func storeThreeMF(atPath path: String, objects: [(mesh: LoadedMesh, transform: simd_float4x4)], configEntries: [(key: String, value: String)]) throws {
-        let pending = objects.map {
-            PendingSceneObject(vertices: $0.mesh.vertices, indices: $0.mesh.indices, matrix16: flatten($0.transform))
+    /// `paintData` (P3-005) is positionally aligned with `objects`;
+    /// nonempty entries become real `ModelVolume::supported_facets` and
+    /// are therefore persisted by the upstream 3MF writer.
+    static func storeThreeMF(
+        atPath path: String,
+        objects: [(mesh: LoadedMesh, transform: simd_float4x4)],
+        configEntries: [(key: String, value: String)],
+        paintData: [[UInt8]] = []
+    ) throws {
+        let pending = objects.enumerated().map { index, object in
+            PendingSceneObject(
+                vertices: object.mesh.vertices, indices: object.mesh.indices,
+                matrix16: flatten(object.transform),
+                paintData: index < paintData.count ? paintData[index] : []
+            )
         }
         let result = withNSA1SceneObjects(pending) { objPtr, objCount in
             withNSA1ConfigEntries(configEntries) { cfgPtr, cfgCount in

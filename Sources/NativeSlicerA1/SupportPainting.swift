@@ -15,6 +15,7 @@ enum SupportPaintType: Int32 {
 /// handle and frees it on deinit.
 final class SupportPaintState {
     private var handle: OpaquePointer?
+    private var history: UndoStack<[UInt8]>
 
     /// Creates a paint session for `mesh`'s local (un-instance-transformed)
     /// geometry, via the real engine's `nsa1_paint_create`.
@@ -26,6 +27,7 @@ final class SupportPaintState {
         }
         guard let created else { return nil }
         handle = created
+        history = UndoStack(initial: [])
     }
 
     deinit {
@@ -36,7 +38,7 @@ final class SupportPaintState {
 
     /// Paints a spherical brush stroke at `center` (local mesh coordinates,
     /// mm) with `radius` (mm), via the real engine's
-    /// `TriangleSelector::select_patch`.
+    /// `TriangleSelector::select_patch`. Each stroke is one undo snapshot.
     func paintSphere(center: SIMD3<Float>, radius: Float, type: SupportPaintType) {
         guard let handle else { return }
         nsa1_paint_sphere(
@@ -45,6 +47,22 @@ final class SupportPaintState {
             Double(radius),
             type.rawValue
         )
+        history.push(serialize())
+    }
+
+    var canUndo: Bool { history.canUndo }
+    var canRedo: Bool { history.canRedo }
+
+    @discardableResult
+    func undo() -> Bool {
+        guard canUndo else { return false }
+        return restore(history.undo())
+    }
+
+    @discardableResult
+    func redo() -> Bool {
+        guard canRedo else { return false }
+        return restore(history.redo())
     }
 
     /// Serializes the current paint state to the real engine's own
@@ -58,5 +76,22 @@ final class SupportPaintState {
         guard let dataPtr, size > 0 else { return [] }
         defer { nsa1_paint_data_free(dataPtr) }
         return Array(UnsafeBufferPointer(start: dataPtr, count: size))
+    }
+
+    /// Restores paint annotations previously serialized by the real
+    /// TriangleSelector (for 3MF project reload), replacing this session's
+    /// undo history with the loaded state.
+    @discardableResult
+    func deserialize(_ data: [UInt8]) -> Bool {
+        guard restore(data) else { return false }
+        history = UndoStack(initial: data)
+        return true
+    }
+
+    private func restore(_ data: [UInt8]) -> Bool {
+        guard let handle else { return false }
+        return data.withUnsafeBufferPointer {
+            nsa1_paint_deserialize(handle, $0.baseAddress, $0.count) == 0
+        }
     }
 }
