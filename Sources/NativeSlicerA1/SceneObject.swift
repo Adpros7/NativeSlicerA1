@@ -8,6 +8,9 @@ struct SceneObject: Identifiable {
     let id: UUID
     let sourceMeshID: UUID
     private var transformHistory: UndoStack<Transform>
+    /// P4-014 variable layer height Z-range overrides (object-local Z,
+    /// mm). Empty means uniform layer height throughout the object.
+    var layerHeightRanges: [LayerHeightRange] = []
 
     init(id: UUID = UUID(), sourceMeshID: UUID, transform: Transform = .identity) {
         self.id = id

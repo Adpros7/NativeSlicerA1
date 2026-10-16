@@ -5,6 +5,7 @@ struct ContentView: View {
     @StateObject private var document = ProjectDocument()
     @State private var showingCalibration = false
     @State private var showingSettings = false
+    @State private var showingLayerHeights = false
 
     var body: some View {
         NavigationSplitView {
@@ -24,6 +25,8 @@ struct ContentView: View {
                     .disabled(document.selection == nil)
                 Button("Calibration…") { showingCalibration = true }
                 Button("Settings…") { showingSettings = true }
+                Button("Layer Heights…") { showingLayerHeights = true }
+                    .disabled(document.selection == nil)
                 Button(document.isSlicing ? "Slicing…" : "Slice", action: document.slice)
                 // G-code view mode picker (P1-012)
                 Menu("View Mode") {
@@ -65,6 +68,11 @@ struct ContentView: View {
         }
         .sheet(isPresented: $showingSettings) {
             SlicingSettingsView(document: document)
+        }
+        .sheet(isPresented: $showingLayerHeights) {
+            if let selection = document.selection {
+                LayerHeightRangesView(document: document, objectID: selection)
+            }
         }
         .sheet(isPresented: $showingCalibration) {
             CalibrationView(document: document)

@@ -107,6 +107,15 @@ uint8_t *nsa1_load_3mf_paint(const char *path, int64_t object_index, size_t *out
 /// Returns 0 on success, -1 on failure/out-of-range index.
 int nsa1_3mf_object_matrix(const char *path, int64_t object_index, double *out_matrix16);
 
+/// One Z-height band with an overridden layer height (P4-014), matching
+/// upstream's `t_layer_height_range` key (`[z_min, z_max)` in mm, object
+/// local Z) and the "layer_height" key of its paired `ModelConfig` value.
+typedef struct {
+    double z_min;
+    double z_max;
+    double layer_height;
+} NSA1LayerHeightRange;
+
 /// One placed object to write into a 3MF project file: its mesh plus a
 /// column-major 4x4 placement matrix (16 doubles, same convention as
 /// `nsa1_3mf_object_matrix`/`simd_float4x4`).
@@ -120,6 +129,10 @@ typedef struct {
     /// this object has no painted enforcer/blocker regions.
     const uint8_t *paint_data;
     size_t paint_data_size;
+    /// P4-014 variable layer height Z-ranges, or NULL for the default
+    /// uniform layer height throughout the object.
+    const NSA1LayerHeightRange *layer_height_ranges;
+    size_t layer_height_range_count;
 } NSA1SceneObject;
 
 /// Result of auto-arranging one object (P4-011): translation in mm to

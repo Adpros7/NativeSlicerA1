@@ -581,6 +581,8 @@ NSA1SceneObject *scene_object_from_model_object(const Slic3r::ModelObject &obj) 
     scene_obj->matrix16 = nullptr;
     scene_obj->paint_data = nullptr;
     scene_obj->paint_data_size = 0;
+    scene_obj->layer_height_ranges = nullptr;
+    scene_obj->layer_height_range_count = 0;
 
     nsa1_free_mesh(mesh_data);
     return scene_obj;
@@ -731,6 +733,19 @@ Slic3r::Model build_model_from_objects(const NSA1SceneObject *objects, size_t ob
             Slic3r::TriangleSelector selector(volume->mesh());
             selector.deserialize(decode_paint_data(obj.paint_data, obj.paint_data_size));
             volume->supported_facets.set(selector);
+        }
+        if (obj.layer_height_ranges != nullptr && obj.layer_height_range_count > 0) {
+            // P4-014: variable layer height. The real engine consumes
+            // ModelObject::layer_config_ranges directly inside its own
+            // slicing-parameter computation (PrintObject::update_layer_height_profile
+            // -> layer_height_profile_from_ranges) — no separate height
+            // profile needs to be computed here.
+            for (size_t r = 0; r < obj.layer_height_range_count; ++r) {
+                const NSA1LayerHeightRange &range = obj.layer_height_ranges[r];
+                Slic3r::t_layer_height_range key{range.z_min, range.z_max};
+                model_object->layer_config_ranges[key].set_key_value(
+                    "layer_height", new Slic3r::ConfigOptionFloat(range.layer_height));
+            }
         }
         Slic3r::ModelInstance *instance = model_object->add_instance();
         Slic3r::Transform3d trafo;

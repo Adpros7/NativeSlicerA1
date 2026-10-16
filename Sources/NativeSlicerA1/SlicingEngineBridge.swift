@@ -197,19 +197,31 @@ private func unflatten(_ raw: UnsafeBufferPointer<Double>) -> simd_float4x4 {
     return simd_float4x4(columns: (column(0), column(4), column(8), column(12)))
 }
 
+/// One Z-height band with an overridden layer height (P4-014). `zMin`/
+/// `zMax` are object-local Z in mm; matches upstream's `t_layer_height_range`
+/// semantics exactly (consumed by the real engine's
+/// `layer_height_profile_from_ranges`, not a reimplemented profile).
+struct LayerHeightRange: Equatable, Sendable {
+    var zMin: Double
+    var zMax: Double
+    var layerHeight: Double
+}
+
 private struct PendingSceneObject {
     let vertices: [Float]
     let indices: [UInt32]
     let matrix16: [Double]
     var paintData: [UInt8] = []
+    var layerHeightRanges: [NSA1LayerHeightRange] = []
 }
 
-/// Recursively pins each object's vertex/index/matrix/paint arrays with
-/// nested `withUnsafeBufferPointer` scopes so the flat `NSA1SceneObject`
-/// array handed to `body` stays valid for the whole call — the C
-/// function never outlives this stack frame, so no manual lifetime
-/// management is needed. An empty `paintData` yields a NULL
-/// `paint_data` pointer (unpainted object).
+/// Recursively pins each object's vertex/index/matrix/paint/layer-height-range
+/// arrays with nested `withUnsafeBufferPointer` scopes so the flat
+/// `NSA1SceneObject` array handed to `body` stays valid for the whole call —
+/// the C function never outlives this stack frame, so no manual lifetime
+/// management is needed. An empty `paintData` yields a NULL `paint_data`
+/// pointer (unpainted object); an empty `layerHeightRanges` yields a NULL
+/// `layer_height_ranges` pointer (uniform layer height, P4-014).
 private func withNSA1SceneObjects<R>(_ pending: [PendingSceneObject], _ body: (UnsafePointer<NSA1SceneObject>?, Int) -> R) -> R {
     func build(_ index: Int, _ acc: inout [NSA1SceneObject]) -> R {
         guard index < pending.count else {
@@ -220,13 +232,16 @@ private func withNSA1SceneObjects<R>(_ pending: [PendingSceneObject], _ body: (U
             object.indices.withUnsafeBufferPointer { ibuf in
                 object.matrix16.withUnsafeBufferPointer { mbuf in
                     object.paintData.withUnsafeBufferPointer { pbuf in
-                        acc.append(NSA1SceneObject(
-                            vertices: vbuf.baseAddress, vertex_count: vbuf.count / 3,
-                            indices: ibuf.baseAddress, index_count: ibuf.count,
-                            matrix16: mbuf.baseAddress,
-                            paint_data: pbuf.baseAddress, paint_data_size: pbuf.count
-                        ))
-                        return build(index + 1, &acc)
+                        object.layerHeightRanges.withUnsafeBufferPointer { lbuf in
+                            acc.append(NSA1SceneObject(
+                                vertices: vbuf.baseAddress, vertex_count: vbuf.count / 3,
+                                indices: ibuf.baseAddress, index_count: ibuf.count,
+                                matrix16: mbuf.baseAddress,
+                                paint_data: pbuf.baseAddress, paint_data_size: pbuf.count,
+                                layer_height_ranges: lbuf.baseAddress, layer_height_range_count: lbuf.count
+                            ))
+                            return build(index + 1, &acc)
+                        }
                     }
                 }
             }
@@ -414,7 +429,8 @@ enum SlicingEngine {
                 indices: UnsafePointer(meshData.indices),
                 index_count: meshData.indices.count,
                 matrix16: UnsafePointer(matrixPtr),
-                paint_data: nil, paint_data_size: 0
+                paint_data: nil, paint_data_size: 0,
+                layer_height_ranges: nil, layer_height_range_count: 0
             ))
         }
 
@@ -534,13 +550,16 @@ enum SlicingEngine {
         objects: [(mesh: LoadedMesh, transform: simd_float4x4)],
         configEntries: [(key: String, value: String)],
         outputPath: String,
-        paintData: [[UInt8]] = []
+        paintData: [[UInt8]] = [],
+        layerHeightRanges: [[LayerHeightRange]] = []
     ) throws -> [ToolpathSegment] {
         let pendingObjects = objects.enumerated().map { index, object in
             PendingSceneObject(
                 vertices: object.mesh.vertices, indices: object.mesh.indices,
                 matrix16: flatten(object.transform),
-                paintData: index < paintData.count ? paintData[index] : []
+                paintData: index < paintData.count ? paintData[index] : [],
+                layerHeightRanges: (index < layerHeightRanges.count ? layerHeightRanges[index] : [])
+                    .map { NSA1LayerHeightRange(z_min: $0.zMin, z_max: $0.zMax, layer_height: $0.layerHeight) }
             )
         }
         var errorMessage: String?
@@ -803,7 +822,8 @@ enum SlicingEngine {
                 indices: UnsafePointer(meshData.indices),
                 index_count: meshData.indices.count,
                 matrix16: UnsafePointer(matrixPtr),
-                paint_data: nil, paint_data_size: 0
+                paint_data: nil, paint_data_size: 0,
+                layer_height_ranges: nil, layer_height_range_count: 0
             ))
         }
 

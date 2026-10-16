@@ -139,9 +139,12 @@ enum SlicingJob {
         loader: BambuProfileLoader,
         selection: ProfileSelection = ProfileSelection(),
         outputPath: String,
-        paintData: [[UInt8]] = []
+        paintData: [[UInt8]] = [],
+        layerHeightRanges: [[LayerHeightRange]] = []
     ) throws -> [ToolpathSegment] {
         let entries = try resolvedConfigEntries(loader: loader, selection: selection)
-        return try SlicingEngine.sliceToGCode(objects: objects, configEntries: entries, outputPath: outputPath, paintData: paintData)
+        return try SlicingEngine.sliceToGCode(
+            objects: objects, configEntries: entries, outputPath: outputPath,
+            paintData: paintData, layerHeightRanges: layerHeightRanges)
     }
 }

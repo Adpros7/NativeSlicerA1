@@ -121,6 +121,15 @@ final class ProjectDocument: ObservableObject {
         objects[i].redo()
     }
 
+    /// Replaces object `objectID`'s P4-014 variable layer height
+    /// overrides wholesale (simple value replacement, no undo stack —
+    /// matches the minimal-state approach of other non-geometric scene
+    /// properties; re-slicing picks up the new ranges automatically).
+    func setLayerHeightRanges(_ ranges: [LayerHeightRange], for objectID: UUID) {
+        guard let i = objects.firstIndex(where: { $0.id == objectID }) else { return }
+        objects[i].layerHeightRanges = ranges
+    }
+
     func removeObject(_ objectID: UUID) {
         guard let object = objects.first(where: { $0.id == objectID }) else { return }
         objects.removeAll { $0.id == objectID }
@@ -192,17 +201,21 @@ final class ProjectDocument: ObservableObject {
         isSlicing = true
         var placed: [(mesh: LoadedMesh, transform: simd_float4x4)] = []
         var paintData: [[UInt8]] = []
+        var layerHeightRanges: [[LayerHeightRange]] = []
         for object in objects {
             guard let mesh = meshes[object.sourceMeshID] else { continue }
             placed.append((mesh, object.transform.matrix))
             paintData.append(paintStates[object.id]?.serialize() ?? [])
+            layerHeightRanges.append(object.layerHeightRanges)
         }
         let selection = profileSelection
         let outputPath = FileManager.default.temporaryDirectory.appendingPathComponent("\(UUID().uuidString).gcode").path
         Task.detached { [weak self] in
             do {
                 let loader = try BambuProfileLoader()
-                let segments = try SlicingJob.slice(objects: placed, loader: loader, selection: selection, outputPath: outputPath, paintData: paintData)
+                let segments = try SlicingJob.slice(
+                    objects: placed, loader: loader, selection: selection, outputPath: outputPath,
+                    paintData: paintData, layerHeightRanges: layerHeightRanges)
                 await MainActor.run { [weak self] in
                     guard let self else { return }
                     self.toolpath = segments

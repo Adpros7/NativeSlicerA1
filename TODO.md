@@ -72,7 +72,7 @@
 - [x] P4-011: Implement auto-arrange. FEATURE_PARITY.md §2: `Arrange.hpp:208-221` (libnest2d packing), already vendored. Acceptance: `nsa1_auto_arrange` C-ABI bridge; packs N objects on the A1's 256×256mm bed with configurable clearance, zero overlaps, verified against the real packing output (not reimplemented).
 - [x] P4-012: Implement support blocker/enforcer painting. FEATURE_PARITY.md §6: `Model.hpp:331-338` (`ModelVolumeType`), needs a `TriangleSelector`-style painting gizmo. P1 priority (higher value than P4-013/014). This is the same underlying gizmo infrastructure P3-005 (support painting) needs — implement once, share between both tasks.
 - [ ] P4-013: Implement modifier meshes (local per-volume config override). FEATURE_PARITY.md §6: `Model.hpp:331-338` (`PARAMETER_MODIFIER`), needs the same painting gizmo as P4-012 plus spatial lookup during slicing. P2 priority.
-- [ ] P4-014: Implement variable layer height. FEATURE_PARITY.md §6: `Slicing.hpp:133-134` (`layer_config_ranges`, `layer_height_profile_from_ranges()`), already vendored. P2 priority; independent of P4-012/013 (doesn't need the painting gizmo, just a Z-range UI).
+- [x] P4-014: Implement variable layer height. FEATURE_PARITY.md §6: `Slicing.hpp:133-134` (`layer_config_ranges`, `layer_height_profile_from_ranges()`), already vendored. P2 priority; independent of P4-012/013 (doesn't need the painting gizmo, just a Z-range UI).
 
 ## Phase 5: Online Models
 
