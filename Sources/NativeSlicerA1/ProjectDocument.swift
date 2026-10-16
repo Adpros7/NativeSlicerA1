@@ -60,7 +60,114 @@ final class ProjectDocument: ObservableObject {
         guard paintStates[objectID]?.redo() == true else { return }
         objectWillChange.send()
     }
+
     func mesh(for object: SceneObject) -> LoadedMesh? { meshes[object.sourceMeshID] }
+    /// World-space axis-aligned bounding box of `object`'s mesh after
+    /// applying its placement transform — used to size/center the
+    /// interactive cut plane (P4-006 prerequisite) sensibly for whatever
+    /// object is selected.
+    func worldBoundingBox(for object: SceneObject) -> (min: SIMD3<Float>, max: SIMD3<Float>)? {
+        guard let mesh = meshes[object.sourceMeshID], !mesh.vertices.isEmpty else { return nil }
+        var lo = SIMD3<Float>(repeating: .greatestFiniteMagnitude)
+        var hi = SIMD3<Float>(repeating: -.greatestFiniteMagnitude)
+        let m = object.transform.matrix
+        var i = 0
+        while i < mesh.vertices.count {
+            let local = SIMD4<Float>(mesh.vertices[i], mesh.vertices[i + 1], mesh.vertices[i + 2], 1)
+            let world4 = m * local
+            let world = SIMD3(world4.x, world4.y, world4.z) / world4.w
+            lo = SIMD3(x: Swift.min(lo.x, world.x), y: Swift.min(lo.y, world.y), z: Swift.min(lo.z, world.z))
+            hi = SIMD3(x: Swift.max(hi.x, world.x), y: Swift.max(hi.y, world.y), z: Swift.max(hi.z, world.z))
+            i += 3
+        }
+        return (lo, hi)
+    }
+
+    /// P4-006 interactive cut-plane state: whether the viewport is in
+    /// cut-plane mode, the plane itself (nil until a selected object
+    /// initializes one), and which parts to keep on `performCut()`.
+    @Published var cutPlaneMode = false {
+        didSet {
+            if cutPlaneMode { beginCutPlane() } else { cutPlane = nil }
+        }
+    }
+    @Published var cutPlane: CutPlane?
+    @Published var cutKeepMode: CutMode = .both
+
+    /// Initializes `cutPlane` centered on the selected object's own
+    /// world-space bounding box center, flat (no tilt), sized to
+    /// comfortably exceed the object's own footprint.
+    func beginCutPlane() {
+        guard let selection, let object = objects.first(where: { $0.id == selection }),
+              let box = worldBoundingBox(for: object) else {
+            cutPlane = nil
+            return
+        }
+        let center = (box.min + box.max) * 0.5
+        let size = box.max - box.min
+        let extent = Swift.max(size.x, size.y, size.z, 10) * 1.5
+        cutPlane = CutPlane(center: center, halfExtent: extent)
+    }
+
+    func setCutPlaneCenter(_ center: SIMD3<Float>) {
+        cutPlane?.center = center
+    }
+
+    func setCutPlaneTilt(x: Float? = nil, y: Float? = nil) {
+        if let x { cutPlane?.tiltX = x }
+        if let y { cutPlane?.tiltY = y }
+    }
+
+    /// Performs the real cut (P4-006) via `SlicingEngine.cutModel` using
+    /// the current `cutPlane`/`cutKeepMode`, replacing the selected
+    /// object with the real resulting part(s) — matching the real
+    /// engine's own Cut tool behavior (the source object is consumed by
+    /// the cut, not kept alongside its own pieces). Mesh data for the
+    /// results comes directly from the real engine, never recomputed in
+    /// Swift. Paint/layer-height overrides on the original do not carry
+    /// over (matches upstream: `ModelObject::cut` resets
+    /// `supported_facets` on cut volumes, and layer-height ranges are a
+    /// Z-range property of the pre-cut object's own geometry).
+    func performCut() {
+        guard let plane = cutPlane,
+              let selectedID = selection,
+              let index = objects.firstIndex(where: { $0.id == selectedID }),
+              let mesh = meshes[objects[index].sourceMeshID]
+        else { return }
+        let transform = objects[index].transform.matrix
+        do {
+            let results = try SlicingEngine.cutModel(
+                objects: [(mesh: mesh, transform: transform)],
+                planePoints: plane.planePoints,
+                cutMode: cutKeepMode
+            )
+            guard !results.isEmpty else {
+                lastError = "Cut produced no geometry — check the plane actually intersects the object."
+                return
+            }
+            let originalID = objects[index].id
+            let originalMeshID = objects[index].sourceMeshID
+            objects.remove(at: index)
+            paintStates.removeValue(forKey: originalID)
+            if !objects.contains(where: { $0.sourceMeshID == originalMeshID }) {
+                meshes.removeValue(forKey: originalMeshID)
+            }
+            var newIDs: [UUID] = []
+            for result in results {
+                let meshID = UUID()
+                meshes[meshID] = result.mesh
+                let newObject = SceneObject(sourceMeshID: meshID, transform: Transform(matrix: result.transform))
+                objects.append(newObject)
+                newIDs.append(newObject.id)
+            }
+            selection = newIDs.first
+            cutPlaneMode = false
+            lastError = nil
+        } catch {
+            lastError = "Cut failed: \(error)"
+        }
+    }
+
 
     /// Imports an STL or 3MF file, adding one scene object per mesh found
     /// (a 3MF can contain multiple model objects; `.3mf` imports also

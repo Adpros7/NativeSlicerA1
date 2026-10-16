@@ -64,6 +64,37 @@ struct ContentView: View {
                     }
                     .disabled(document.selection.map(document.canRedoPaint(for:)) != true)
                 }
+                // P4-006 interactive cut-plane gizmo: toggle plane mode
+                // (click/drag in the viewport places the plane at the
+                // clicked surface point, same raycast as paint mode),
+                // fine-tune height/tilt with sliders, pick which side(s)
+                // to keep, and perform the real engine cut.
+                // The live wireframe preview is rendered by
+                // MetalRenderer.setCutPlane (cyan quad + normal line).
+                Toggle("Cut Plane", isOn: $document.cutPlaneMode)
+                    .disabled(document.selection == nil)
+                if document.cutPlaneMode, let plane = document.cutPlane,
+                   let selection = document.selection,
+                   let object = document.objects.first(where: { $0.id == selection }),
+                   let box = document.worldBoundingBox(for: object) {
+                    let zRange = (box.min.z - plane.halfExtent)...(box.max.z + plane.halfExtent)
+                    Slider(value: cutPlaneHeightBinding, in: zRange) { Text("Height") }
+                        .frame(width: 100)
+                    Text("Z \(plane.center.z, specifier: "%.1f")")
+                        .monospacedDigit()
+                    Slider(value: cutPlaneTiltXBinding, in: -(.pi / 4)...(.pi / 4)) { Text("Tilt X") }
+                        .frame(width: 80)
+                    Slider(value: cutPlaneTiltYBinding, in: -(.pi / 4)...(.pi / 4)) { Text("Tilt Y") }
+                        .frame(width: 80)
+                    Picker("Keep", selection: $document.cutKeepMode) {
+                        Text("Both").tag(CutMode.both)
+                        Text("Lower").tag(CutMode.lowerOnly)
+                        Text("Upper").tag(CutMode.upperOnly)
+                    }
+                    .pickerStyle(.segmented)
+                    .frame(width: 160)
+                    Button("Cut", action: document.performCut)
+                }
             }
         }
         .sheet(isPresented: $showingSettings) {
@@ -85,6 +116,27 @@ struct ContentView: View {
         } message: {
             Text(document.lastError ?? "")
         }
+    }
+
+    private var cutPlaneHeightBinding: Binding<Float> {
+        Binding(
+            get: { document.cutPlane?.center.z ?? 0 },
+            set: { newZ in document.cutPlane?.center.z = newZ }
+        )
+    }
+
+    private var cutPlaneTiltXBinding: Binding<Float> {
+        Binding(
+            get: { document.cutPlane?.tiltX ?? 0 },
+            set: { document.setCutPlaneTilt(x: $0) }
+        )
+    }
+
+    private var cutPlaneTiltYBinding: Binding<Float> {
+        Binding(
+            get: { document.cutPlane?.tiltY ?? 0 },
+            set: { document.setCutPlaneTilt(y: $0) }
+        )
     }
 
     private func importModel() {

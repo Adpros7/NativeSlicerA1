@@ -45,6 +45,11 @@ final class MetalRenderer: NSObject, MTKViewDelegate {
     private var meshBuffers: [UUID: GPUMesh] = [:]
     private var toolpathBuffer: MTLBuffer?
     private var toolpathVertexCount = 0
+    /// P4-006 interactive cut-plane wireframe overlay, uploaded by
+    /// `setCutPlane` and drawn with the same line-list pipeline as the
+    /// toolpath (just a distinct color), no new pipeline state needed.
+    private var cutPlaneBuffer: MTLBuffer?
+    private var cutPlaneVertexCount = 0
 
     var renderObjects: [RenderObject] = []
     var camera = Camera()
@@ -132,7 +137,27 @@ final class MetalRenderer: NSObject, MTKViewDelegate {
         toolpathVertexCount = segments.count * 2
     }
 
-
+    /// Uploads the P4-006 interactive cut-plane wireframe (quad outline
+    /// + normal indicator) as a GPU line-list buffer, same vertex layout
+    /// as the toolpath buffer (position + color interleaved). `nil`
+    /// clears it (not in cut-plane mode / no object selected).
+    func setCutPlane(_ plane: CutPlane?) {
+        guard let plane else {
+            cutPlaneBuffer = nil
+            cutPlaneVertexCount = 0
+            return
+        }
+        let color = SIMD3<Float>(0.2, 0.9, 0.95) // cyan, distinct from toolpath/mesh colors
+        var floats: [Float] = []
+        let segments = plane.wireframeSegments
+        floats.reserveCapacity(segments.count * 12)
+        for (a, b) in segments {
+            floats.append(contentsOf: [a.x, a.y, a.z, color.x, color.y, color.z])
+            floats.append(contentsOf: [b.x, b.y, b.z, color.x, color.y, color.z])
+        }
+        cutPlaneBuffer = device.makeBuffer(bytes: floats, length: floats.count * MemoryLayout<Float>.stride, options: .storageModeShared)
+        cutPlaneVertexCount = segments.count * 2
+    }
     /// Uploads a GPU buffer pair for `mesh` if `meshID` isn't cached yet.
     func ensureBuffer(for meshID: UUID, mesh: LoadedMesh) {
         guard meshBuffers[meshID] == nil else { return }
@@ -186,6 +211,14 @@ final class MetalRenderer: NSObject, MTKViewDelegate {
             encoder.drawPrimitives(type: .line, vertexStart: 0, vertexCount: toolpathVertexCount)
         }
 
+        if let cutPlaneBuffer, cutPlaneVertexCount > 0 {
+            var cutPlaneUniforms = ToolpathUniforms(modelViewProjection: viewProjection)
+            encoder.setRenderPipelineState(toolpathPipelineState)
+            encoder.setVertexBuffer(cutPlaneBuffer, offset: 0, index: 0)
+            encoder.setVertexBytes(&cutPlaneUniforms, length: MemoryLayout<ToolpathUniforms>.stride, index: 1)
+            encoder.drawPrimitives(type: .line, vertexStart: 0, vertexCount: cutPlaneVertexCount)
+        }
+
         encoder.endEncoding()
         commandBuffer.present(drawable)
         commandBuffer.commit()
@@ -203,12 +236,16 @@ final class OrbitMTKView: MTKView {
     /// Called with the click/drag location in this view's own
     /// (top-left-origin, AppKit-flipped) coordinate space.
     var onPaintStroke: ((CGPoint) -> Void)?
+    /// P4-006: when true, clicks/drags reposition the cut plane instead
+    /// of orbiting (mirrors `isPaintMode`'s routing).
+    var isCutPlaneMode = false
+    var onCutPlaneClick: ((CGPoint) -> Void)?
 
     override var acceptsFirstResponder: Bool { true }
 
     override func mouseDown(with event: NSEvent) {
-        guard isPaintMode else { return }
-        onPaintStroke?(flippedLocation(of: event))
+        if isPaintMode { onPaintStroke?(flippedLocation(of: event)); return }
+        if isCutPlaneMode { onCutPlaneClick?(flippedLocation(of: event)) }
     }
 
     override func mouseDragged(with event: NSEvent) {
@@ -216,13 +253,12 @@ final class OrbitMTKView: MTKView {
             onPaintStroke?(flippedLocation(of: event))
             return
         }
+        if isCutPlaneMode {
+            onCutPlaneClick?(flippedLocation(of: event))
+            return
+        }
         let sensitivity: Float = 0.01
         onOrbit?(Float(event.deltaX) * sensitivity, Float(event.deltaY) * sensitivity)
-    }
-
-    override func scrollWheel(with event: NSEvent) {
-        let factor: Float = 1 + Float(event.scrollingDeltaY) * 0.01
-        onZoom?(factor)
     }
 
     /// `NSView`'s event location is bottom-left-origin; `screenPointToRay`
@@ -276,6 +312,26 @@ struct MetalViewport: NSViewRepresentable {
             guard let hit = rayMeshIntersection(origin: localOrigin, direction: localDir, mesh: mesh) else { return }
             document.paintAt(objectID: selectedID, localPoint: hit)
         }
+        view.onCutPlaneClick = { [weak renderer, weak view] screenPoint in
+            guard let renderer, let view,
+                  let selectedID = document.selection,
+                  let object = document.objects.first(where: { $0.id == selectedID }),
+                  let mesh = document.mesh(for: object)
+            else { return }
+            let ray = screenPointToRay(screenPoint: screenPoint, viewSize: view.bounds.size, camera: renderer.camera)
+            let inverseTransform = object.transform.matrix.inverse
+            let localOrigin4 = inverseTransform * SIMD4(ray.origin, 1)
+            let localOrigin = SIMD3(localOrigin4.x, localOrigin4.y, localOrigin4.z) / localOrigin4.w
+            let localDir4 = inverseTransform * SIMD4(ray.direction, 0)
+            let localDir = normalize(SIMD3(localDir4.x, localDir4.y, localDir4.z))
+            guard let localHit = rayMeshIntersection(origin: localOrigin, direction: localDir, mesh: mesh) else { return }
+            // The cut plane lives in world space (matching
+            // `SlicingEngine.cutModel`'s plane-point convention), so the
+            // local mesh hit must be transformed back out.
+            let worldHit4 = object.transform.matrix * SIMD4(localHit, 1)
+            let worldHit = SIMD3(worldHit4.x, worldHit4.y, worldHit4.z) / worldHit4.w
+            document.setCutPlaneCenter(worldHit)
+        }
         return view
     }
 
@@ -293,5 +349,7 @@ struct MetalViewport: NSViewRepresentable {
         let vm = document.toolpathViewMode
         renderer.setToolpath(document.toolpath, viewMode: vm)
         nsView.isPaintMode = document.paintMode
+        nsView.isCutPlaneMode = document.cutPlaneMode
+        renderer.setCutPlane(document.cutPlaneMode ? document.cutPlane : nil)
     }
 }
