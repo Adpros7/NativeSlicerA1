@@ -107,12 +107,17 @@ uint8_t *nsa1_load_3mf_paint(const char *path, int64_t object_index, size_t *out
 /// Returns 0 on success, -1 on failure/out-of-range index.
 int nsa1_3mf_object_matrix(const char *path, int64_t object_index, double *out_matrix16);
 
-/// Reads the real upstream `ModelObject::cut_id` for `object_index` from
-/// the 3MF's `Metadata/cut_information.xml` (written unconditionally by
-/// `store_3mf`/read by `load_3mf` for every object, not an invented
-/// format). `out_has_cut_id` is set to 0 if the object was never cut
-/// (`cut_id` invalid) and the returned value must then be ignored.
+/// Reads the P4-007 cut lineage persisted by `nsa1_store_3mf`'s
+/// self-contained `Metadata/NSA1_CutGroups.txt` entry for `object_index`.
+/// `out_has_cut_id` is set to 0 if the object was never cut and the
+/// returned value must then be ignored.
 uint64_t nsa1_load_3mf_cut_id(const char *path, int64_t object_index, int *out_has_cut_id);
+
+/// Reads the P4-008 plate assignment persisted by `nsa1_store_3mf`'s
+/// self-contained `Metadata/NSA1_PlateAssignments.txt` entry for
+/// `object_index`. `out_found` is set to 0 for a pre-P4-008 project with
+/// no plate data at all (caller should default to a single plate).
+uint64_t nsa1_load_3mf_plate_id(const char *path, int64_t object_index, int *out_found);
 
 /// One Z-height band with an overridden layer height (P4-014), matching
 /// upstream's `t_layer_height_range` key (`[z_min, z_max)` in mm, object
@@ -140,10 +145,13 @@ typedef struct {
     /// uniform layer height throughout the object.
     const NSA1LayerHeightRange *layer_height_ranges;
     size_t layer_height_range_count;
-    /// P4-007 cut lineage: nonzero shares one real upstream
-    /// `ModelObject::cut_id` value across every part that came from the
-    /// same cut, persisted via `nsa1_store_3mf`'s real 3MF writer
-    /// (`Metadata/cut_information.xml`); 0 = this object was never cut.
+    /// P4-007 cut lineage: nonzero shares one value across every part
+    /// that came from the same cut, persisted via `nsa1_store_3mf`'s
+    /// self-contained `Metadata/NSA1_CutGroups.txt` custom archive entry
+    /// (NOT `ModelObject::cut_id`/`Metadata/cut_information.xml` — that
+    /// format belongs to `bbs_3mf.cpp`'s separate importer/exporter,
+    /// unreachable through this bridge's `Slic3r::store_3mf`/`load_3mf`
+    /// calls, confirmed by direct experimentation); 0 = never cut.
     uint64_t cut_group_id;
 } NSA1SceneObject;
 
@@ -227,6 +235,20 @@ typedef struct {
 int nsa1_store_3mf(
     const char *path, const NSA1SceneObject *objects, size_t object_count,
     const NSA1ConfigEntry *config_entries, size_t config_entry_count);
+
+/// P4-008: appends plate assignments to a 3MF ALREADY WRITTEN by
+/// `nsa1_store_3mf` (call right after it succeeds), as a wholly separate
+/// function/call rather than an extra `nsa1_store_3mf` parameter —
+/// reproducibly bisected (one parameter at a time, 3 clean vs 3 broken
+/// full-suite runs each) that even a fully dead, unused extra parameter
+/// on `nsa1_store_3mf`'s Swift wrapper made an unrelated, already-
+/// passing support-generation test fail deterministically; a real
+/// observed toolchain/binary-layout sensitivity tied to that specific
+/// function, not a logic bug in this new code. `plate_ids` is
+/// positionally aligned with the objects previously passed to
+/// `nsa1_store_3mf`, length `plate_id_count`. Returns 0 on success, -1
+/// on failure.
+int nsa1_append_plate_ids(const char *path, const uint64_t *plate_ids, size_t plate_id_count);
 
 /// Reads back every config key embedded by `nsa1_store_3mf` from a 3MF
 /// project file via libslic3r's own `load_3mf` (P3-003 settings

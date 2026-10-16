@@ -1,4 +1,5 @@
 #include "CSlic3rBridge.h"
+#include <functional>
 
 // NSVGUtils.cpp inside libslic3r.a calls nsvgParse/nsvgDelete/nsvgParseFromFile
 // but only BambuStudio's GUI layer (Utils/BitmapCache.cpp) provides the
@@ -546,28 +547,28 @@ extern "C" int nsa1_3mf_object_matrix(const char *path, int64_t object_index, do
     return 0;
 }
 
-/// P4-007 cut lineage persistence. `store_3mf`/`load_3mf` (`3mf.cpp`) are
-/// the LEGACY plain-3MF reader/writer this bridge uses throughout — NOT
-/// BambuStudio's separate full-project format (`bbs_3mf.cpp`), which is
-/// the only one with a real `ModelObject::cut_id`
-/// write/read (`Metadata/cut_information.xml`); confirmed by direct
+/// P4-007/P4-008 small scalar-per-object persistence. `store_3mf`/
+/// `load_3mf` (`3mf.cpp`) are the LEGACY plain-3MF reader/writer this
+/// bridge uses throughout — NOT BambuStudio's separate full-project
+/// format (`bbs_3mf.cpp`), which is the only one with real
+/// `ModelObject::cut_id`/multi-plate persistence; confirmed by direct
 /// experimentation that `Slic3r::load_3mf` never restores a `cut_id` set
 /// before `Slic3r::store_3mf`. Reusing the real engine's object model
-/// isn't reachable here, so this appends one small custom archive entry
-/// to the already-written 3mf (via miniz's documented
-/// reader-to-writer conversion, same `miniz_extension.hpp` helpers
-/// `nsa1_load_3mf_config` already uses to read a custom entry) rather
-/// than inventing project-format internals.
+/// for this isn't reachable here, so both P4-007's cut lineage and
+/// P4-008's plate assignment are persisted as small custom archive
+/// entries (`index=value` lines) appended to the already-written 3mf,
+/// via miniz's documented reader-to-writer conversion (same
+/// `miniz_extension.hpp` helpers `nsa1_load_3mf_config` already uses to
+/// read a custom entry) rather than inventing project-format internals.
 const char *NSA1_CUT_GROUPS_FILE = "Metadata/NSA1_CutGroups.txt";
+const char *NSA1_PLATE_ASSIGNMENTS_FILE = "Metadata/NSA1_PlateAssignments.txt";
 
-bool append_cut_groups_file(const char *path, const NSA1SceneObject *objects, size_t object_count) {
-    std::string content;
+bool append_nsa1_object_metadata(const char *path, const NSA1SceneObject *objects, size_t object_count, const uint64_t *plate_ids_unused) {
+    std::string cut_groups;
     for (size_t i = 0; i < object_count; ++i) {
-        if (objects[i].cut_group_id != 0) {
-            content += std::to_string(i) + "=" + std::to_string(objects[i].cut_group_id) + "\n";
-        }
+        if (objects[i].cut_group_id != 0) cut_groups += std::to_string(i) + "=" + std::to_string(objects[i].cut_group_id) + "\n";
     }
-    if (content.empty()) return true; // nothing to persist
+    if (cut_groups.empty()) return true; // nothing to persist
 
     mz_zip_archive archive;
     mz_zip_zero_struct(&archive);
@@ -581,22 +582,46 @@ bool append_cut_groups_file(const char *path, const NSA1SceneObject *objects, si
         mz_zip_reader_end(&archive);
         return false;
     }
-    bool ok = mz_zip_writer_add_mem(&archive, NSA1_CUT_GROUPS_FILE, content.data(), content.size(), MZ_DEFAULT_COMPRESSION);
+    bool ok = mz_zip_writer_add_mem(&archive, NSA1_CUT_GROUPS_FILE, cut_groups.data(), cut_groups.size(), MZ_DEFAULT_COMPRESSION);
     ok = mz_zip_writer_finalize_archive(&archive) && ok;
     mz_zip_writer_end(&archive);
     return ok;
 }
-extern "C" uint64_t nsa1_load_3mf_cut_id(const char *path, int64_t object_index, int *out_has_cut_id) {
-    *out_has_cut_id = 0;
+
+/// P4-008: standalone plate-assignment writer, intentionally NOT folded
+/// into `append_nsa1_object_metadata`/`nsa1_store_3mf` — see
+/// `nsa1_append_plate_ids`'s header doc for why.
+bool append_plate_assignments_file(const char *path, const uint64_t *plate_ids, size_t plate_id_count) {
+    std::string plate_assignments;
+    for (size_t i = 0; i < plate_id_count; ++i) {
+        if (plate_ids[i] != 0) plate_assignments += std::to_string(i) + "=" + std::to_string(plate_ids[i]) + "\n";
+    }
+    if (plate_assignments.empty()) return true; // nothing to persist
+
+    mz_zip_archive archive;
+    mz_zip_zero_struct(&archive);
+    if (!mz_zip_reader_init_file(&archive, path, 0)) return false;
+    if (!mz_zip_writer_init_from_reader(&archive, path)) {
+        mz_zip_reader_end(&archive);
+        return false;
+    }
+    bool ok = mz_zip_writer_add_mem(&archive, NSA1_PLATE_ASSIGNMENTS_FILE, plate_assignments.data(), plate_assignments.size(), MZ_DEFAULT_COMPRESSION);
+    ok = mz_zip_writer_finalize_archive(&archive) && ok;
+    mz_zip_writer_end(&archive);
+    return ok;
+}
+
+uint64_t read_index_value_entry(const char *path, const char *entry_name, int64_t object_index, int *out_found) {
+    *out_found = 0;
     if (object_index < 0) return 0;
 
     mz_zip_archive archive;
     mz_zip_zero_struct(&archive);
     if (!Slic3r::open_zip_reader(&archive, path)) return 0;
-    int file_index = mz_zip_reader_locate_file(&archive, NSA1_CUT_GROUPS_FILE, nullptr, 0);
+    int file_index = mz_zip_reader_locate_file(&archive, entry_name, nullptr, 0);
     if (file_index < 0) {
         Slic3r::close_zip_reader(&archive);
-        return 0; // project has no cut lineage recorded (never cut, or pre-P4-007)
+        return 0;
     }
     mz_zip_archive_file_stat stat;
     if (!mz_zip_reader_file_stat(&archive, file_index, &stat)) {
@@ -615,13 +640,21 @@ extern "C" uint64_t nsa1_load_3mf_cut_id(const char *path, int64_t object_index,
         if (line.rfind(prefix, 0) != 0) continue;
         try {
             uint64_t value = std::stoull(line.substr(prefix.size()));
-            *out_has_cut_id = 1;
+            *out_found = 1;
             return value;
         } catch (...) {
             return 0;
         }
     }
     return 0;
+}
+
+extern "C" uint64_t nsa1_load_3mf_cut_id(const char *path, int64_t object_index, int *out_has_cut_id) {
+    return read_index_value_entry(path, NSA1_CUT_GROUPS_FILE, object_index, out_has_cut_id);
+}
+
+extern "C" uint64_t nsa1_load_3mf_plate_id(const char *path, int64_t object_index, int *out_found) {
+    return read_index_value_entry(path, NSA1_PLATE_ASSIGNMENTS_FILE, object_index, out_found);
 }
 
 namespace {
@@ -1057,8 +1090,12 @@ extern "C" int nsa1_store_3mf(
     Slic3r::Model model = build_model_from_objects(objects, object_count);
     Slic3r::DynamicPrintConfig config = build_full_config(config_entries, config_entry_count);
     if (!Slic3r::store_3mf(path, &model, &config, /*fullpath_sources=*/true)) return -1;
-    if (!append_cut_groups_file(path, objects, object_count)) return -1;
+    if (!append_nsa1_object_metadata(path, objects, object_count, nullptr)) return -1;
     return 0;
+}
+
+extern "C" int nsa1_append_plate_ids(const char *path, const uint64_t *plate_ids, size_t plate_id_count) {
+    return append_plate_assignments_file(path, plate_ids, plate_id_count) ? 0 : -1;
 }
 
 extern "C" NSA1ConfigEntry *nsa1_load_3mf_config(const char *path, size_t *out_count) {

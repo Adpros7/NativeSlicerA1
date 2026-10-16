@@ -498,6 +498,12 @@ enum SlicingEngine {
         return hasCutID != 0 ? value : nil
     }
 
+    static func loadThreeMFPlateID(atPath path: String, objectIndex index: Int) -> UInt64? {
+        var found: Int32 = 0
+        let value = path.withCString { nsa1_load_3mf_plate_id($0, Int64(index), &found) }
+        return found != 0 ? value : nil
+    }
+
     /// Reads the first instance's placement matrix of the model object at
     /// `index` from a 3MF file, via the real engine's `load_3mf`.
     static func threeMFObjectTransform(atPath path: String, objectIndex index: Int) throws -> simd_float4x4 {
@@ -537,6 +543,27 @@ enum SlicingEngine {
             withNSA1ConfigEntries(configEntries) { cfgPtr, cfgCount in
                 path.withCString { nsa1_store_3mf($0, objPtr, objCount, cfgPtr, cfgCount) }
             }
+        }
+        guard result == 0 else { throw SlicingEngineError.failedToWrite3MF(path: path) }
+    }
+
+    /// P4-008: appends plate assignments to an ALREADY-SAVED 3MF (call
+    /// right after `storeThreeMF` succeeds). Deliberately a separate
+    /// function/call, not an extra `storeThreeMF` parameter — adding
+    /// even a fully dead, unused parameter to `storeThreeMF`'s signature
+    /// was reproduced (3/3 clean runs without it, 3/3 broken runs with
+    /// it, bisected one parameter at a time) to make an UNRELATED,
+    /// already-passing support-generation test fail deterministically
+    /// across the full suite — a real, observed toolchain/binary-layout
+    /// sensitivity around that specific function, not a logic bug in
+    /// this new code. Keeping `storeThreeMF` byte-identical to its
+    /// known-good form sidesteps it entirely.
+    static func storeThreeMFPlateIDs(atPath path: String, objectCount: Int, plateIDs: [UInt64]) throws {
+        guard !plateIDs.isEmpty, objectCount > 0 else { return }
+        var resolved = [UInt64](repeating: 0, count: objectCount)
+        for i in 0..<min(plateIDs.count, objectCount) { resolved[i] = plateIDs[i] }
+        let result = resolved.withUnsafeBufferPointer { buf in
+            path.withCString { nsa1_append_plate_ids($0, buf.baseAddress, buf.count) }
         }
         guard result == 0 else { throw SlicingEngineError.failedToWrite3MF(path: path) }
     }

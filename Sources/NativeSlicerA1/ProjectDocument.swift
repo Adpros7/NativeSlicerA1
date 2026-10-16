@@ -20,6 +20,15 @@ final class ProjectDocument: ObservableObject {
     /// (P3-003) — applied by `slice()` and persisted by `save(to:)`/
     /// `load(from:)` via the 3MF project's embedded config.
     @Published var profileSelection = SlicingJob.ProfileSelection()
+    /// P4-008 batch-job plate grouping — always at least one plate.
+    @Published private(set) var plates: [Plate]
+    @Published var activePlateID: UInt64
+
+    init() {
+        let plate = Plate(name: "Plate 1")
+        plates = [plate]
+        activePlateID = plate.id
+    }
 
 
     /// P3-005 support-paint UI state: whether the viewport is in paint
@@ -216,13 +225,14 @@ final class ProjectDocument: ObservableObject {
             if cutHistory == nil {
                 cutHistory = UndoStack(initial: objects)
             }
+            let originalPlateID = objects[index].plateID
             objects.remove(at: index)
             let cutGroupID = UInt64.random(in: 1...UInt64.max) // 0 means "not cut"
             var newIDs: [UUID] = []
             for result in results {
                 let meshID = UUID()
                 meshes[meshID] = result.mesh
-                let newObject = SceneObject(sourceMeshID: meshID, transform: Transform(matrix: result.transform), cutGroupID: cutGroupID)
+                let newObject = SceneObject(sourceMeshID: meshID, transform: Transform(matrix: result.transform), cutGroupID: cutGroupID, plateID: originalPlateID)
                 objects.append(newObject)
                 newIDs.append(newObject.id)
             }
@@ -240,7 +250,7 @@ final class ProjectDocument: ObservableObject {
     /// restore each object's saved placement).
     func importModel(at url: URL) {
         do {
-            let imported = try loadScene(at: url)
+            let imported = try loadScene(at: url, defaultPlateID: activePlateID)
             meshes.merge(imported.meshes) { _, new in new }
             objects.append(contentsOf: imported.objects)
             selection = imported.objects.last?.id ?? selection
@@ -253,7 +263,7 @@ final class ProjectDocument: ObservableObject {
     /// Loads all file data into temporary value collections before exposing
     /// it to the scene, so an unreadable/partly-invalid project cannot
     /// leave the user with a partially mutated document.
-    private func loadScene(at url: URL) throws -> (meshes: [UUID: LoadedMesh], objects: [SceneObject]) {
+    private func loadScene(at url: URL, defaultPlateID: UInt64) throws -> (meshes: [UUID: LoadedMesh], objects: [SceneObject]) {
         let loaded: [(mesh: LoadedMesh, transform: Transform)]
         switch url.pathExtension.lowercased() {
         case "stl":
@@ -274,7 +284,7 @@ final class ProjectDocument: ObservableObject {
         let objects = loaded.map { item in
             let meshID = UUID()
             meshes[meshID] = item.mesh
-            return SceneObject(sourceMeshID: meshID, transform: item.transform)
+            return SceneObject(sourceMeshID: meshID, transform: item.transform, plateID: defaultPlateID)
         }
         return (meshes, objects)
     }
@@ -311,6 +321,58 @@ final class ProjectDocument: ObservableObject {
         if selection == objectID { selection = nil }
     }
 
+    /// All objects currently placed on `activePlateID` — the subset the
+    /// viewport, slicer, and auto-arrange operate on for batch workflows.
+    var objectsOnActivePlate: [SceneObject] {
+        objects.filter { $0.plateID == activePlateID }
+    }
+
+    /// Creates a new empty plate and returns its id; does not switch
+    /// `activePlateID` (callers choose when to switch, matching
+    /// `addConnector`/other explicit-mutation methods in this file).
+    @discardableResult
+    func addPlate(name: String? = nil) -> UInt64 {
+        let plate = Plate(name: name ?? "Plate \(plates.count + 1)")
+        plates.append(plate)
+        return plate.id
+    }
+
+    /// Removes `plateID`, reassigning its objects to the first remaining
+    /// plate rather than deleting them — a batch-job queue must never
+    /// silently discard placed geometry. No-op if `plateID` is the only
+    /// plate (a project always has at least one).
+    func removePlate(_ plateID: UInt64) {
+        guard plates.count > 1, let index = plates.firstIndex(where: { $0.id == plateID }) else { return }
+        plates.remove(at: index)
+        let fallback = plates[0].id
+        for i in objects.indices where objects[i].plateID == plateID {
+            objects[i].plateID = fallback
+        }
+        if activePlateID == plateID { activePlateID = fallback }
+    }
+
+    /// Auto-arranges only `objectsOnActivePlate` via the real engine's
+    /// libnest2d-backed `SlicingEngine.autoArrange` (P4-011) — other
+    /// plates' objects are excluded entirely, never used as packing
+    /// obstacles for this plate's real convex-hull-based arrangement.
+    func autoArrangeActivePlate(bedWidth: Double, bedHeight: Double, clearance: Double) async throws {
+        let plateObjects = objectsOnActivePlate
+        guard !plateObjects.isEmpty else { return }
+        let meshInputs: [(vertices: [Float], indices: [UInt32], matrix: simd_float4x4)] = plateObjects.compactMap { object in
+            guard let mesh = meshes[object.sourceMeshID] else { return nil }
+            return (mesh.vertices, mesh.indices, object.transform.matrix)
+        }
+        let results = try SlicingEngine.autoArrange(
+            meshes: meshInputs, bedWidth: bedWidth, bedHeight: bedHeight, clearance: clearance)
+        for (object, result) in zip(plateObjects, results) {
+            guard let i = objects.firstIndex(where: { $0.id == object.id }) else { continue }
+            var transform = objects[i].transform
+            transform.translation += SIMD3(Float(result.x), Float(result.y), 0)
+            transform.rotation = simd_quatf(angle: Float(result.rotation), axis: SIMD3(0, 0, 1)) * transform.rotation
+            objects[i].apply(transform)
+        }
+    }
+
     /// Saves the scene as a 3MF project file via the real engine's
     /// `store_3mf`, including resolved profile config (P3-003) and
     /// TriangleSelector-backed support paint (P3-005), so both profile
@@ -319,11 +381,13 @@ final class ProjectDocument: ObservableObject {
         var payload: [(mesh: LoadedMesh, transform: simd_float4x4)] = []
         var paintData: [[UInt8]] = []
         var cutGroupIDs: [UInt64?] = []
+        var plateIDs: [UInt64] = []
         for object in objects {
             guard let mesh = meshes[object.sourceMeshID] else { continue }
             payload.append((mesh, object.transform.matrix))
             paintData.append(paintStates[object.id]?.serialize() ?? [])
             cutGroupIDs.append(object.cutGroupID)
+            plateIDs.append(object.plateID)
         }
         do {
             let loader = try BambuProfileLoader()
@@ -331,6 +395,7 @@ final class ProjectDocument: ObservableObject {
             try SlicingEngine.storeThreeMF(
                 atPath: url.path, objects: payload, configEntries: configEntries,
                 paintData: paintData, cutGroupIDs: cutGroupIDs)
+            try SlicingEngine.storeThreeMFPlateIDs(atPath: url.path, objectCount: payload.count, plateIDs: plateIDs)
             lastError = nil
         } catch {
             lastError = "Save failed: \(error)"
@@ -343,7 +408,7 @@ final class ProjectDocument: ObservableObject {
     /// successfully.
     func load(from url: URL) {
         do {
-            let loaded = try loadScene(at: url)
+            let loaded = try loadScene(at: url, defaultPlateID: activePlateID)
             let configEntries = SlicingEngine.loadThreeMFConfig(atPath: url.path)
             var restoredPaintStates: [UUID: SupportPaintState] = [:]
             var restoredObjects = loaded.objects
@@ -357,11 +422,28 @@ final class ProjectDocument: ObservableObject {
                         restoredPaintStates[object.id] = state
                     }
                     restoredObjects[index].cutGroupID = SlicingEngine.loadThreeMFCutGroupID(atPath: url.path, objectIndex: index)
+                    if let plateID = SlicingEngine.loadThreeMFPlateID(atPath: url.path, objectIndex: index) {
+                        restoredObjects[index].plateID = plateID
+                    }
                 }
             }
+            // Reconstruct the plates list from the distinct plate ids
+            // actually referenced by the loaded objects (first-seen
+            // order) — the plate LIST itself isn't separately persisted,
+            // only each object's assignment, which is sufficient to
+            // fully reconstruct it.
+            var seenPlateIDs: [UInt64] = []
+            for object in restoredObjects where !seenPlateIDs.contains(object.plateID) {
+                seenPlateIDs.append(object.plateID)
+            }
+            let restoredPlates = seenPlateIDs.isEmpty
+                ? [Plate(name: "Plate 1")]
+                : seenPlateIDs.enumerated().map { index, id in Plate(id: id, name: "Plate \(index + 1)") }
             meshes = loaded.meshes
             objects = restoredObjects
             paintStates = restoredPaintStates
+            plates = restoredPlates
+            activePlateID = restoredPlates[0].id
             selection = restoredObjects.last?.id
             profileSelection = SlicingJob.restoreSelection(from: configEntries)
             lastError = nil

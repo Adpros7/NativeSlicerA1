@@ -15,12 +15,16 @@ struct SceneObject: Identifiable, Equatable {
     /// that came from the same `performCut()`, persisted via
     /// `storeThreeMF`'s `cutGroupIDs` / `loadThreeMFCutGroupID`.
     var cutGroupID: UInt64?
+    /// P4-008 batch-job plate grouping — which `Plate.id` this object is
+    /// currently placed on.
+    var plateID: UInt64
 
-    init(id: UUID = UUID(), sourceMeshID: UUID, transform: Transform = .identity, cutGroupID: UInt64? = nil) {
+    init(id: UUID = UUID(), sourceMeshID: UUID, transform: Transform = .identity, cutGroupID: UInt64? = nil, plateID: UInt64) {
         self.id = id
         self.sourceMeshID = sourceMeshID
         transformHistory = UndoStack(initial: transform)
         self.cutGroupID = cutGroupID
+        self.plateID = plateID
     }
 
     /// Compares observable state only, not `transformHistory`'s full
@@ -31,7 +35,7 @@ struct SceneObject: Identifiable, Equatable {
     static func == (lhs: SceneObject, rhs: SceneObject) -> Bool {
         lhs.id == rhs.id && lhs.sourceMeshID == rhs.sourceMeshID &&
             lhs.transform == rhs.transform && lhs.layerHeightRanges == rhs.layerHeightRanges &&
-            lhs.cutGroupID == rhs.cutGroupID
+            lhs.cutGroupID == rhs.cutGroupID && lhs.plateID == rhs.plateID
     }
 
     var transform: Transform { transformHistory.current }

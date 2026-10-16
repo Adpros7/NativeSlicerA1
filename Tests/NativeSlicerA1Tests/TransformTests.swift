@@ -84,7 +84,7 @@ final class UndoStackTests: XCTestCase {
 
 final class SceneObjectTests: XCTestCase {
     func testApplyUndoRedo() {
-        var object = SceneObject(sourceMeshID: UUID())
+        var object = SceneObject(sourceMeshID: UUID(), plateID: 1)
         XCTAssertEqual(object.transform, .identity)
 
         let moved = Transform.identity.translated(by: SIMD3(5, 0, 0))
