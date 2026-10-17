@@ -155,14 +155,14 @@ Shared pattern for all of these: load a bundled calibration model (3MF/STL), app
 | Feature | BambuStudio/OrcaSlicer | NativeSlicerA1 | Priority | Gap |
 |---|---|---|---|---|
 | SSDP discovery | closed-source (`bambu_networking` plugin) — RESEARCH-P0-007.md | **full**, no plugin dependency | — | NativeSlicerA1 is cleaner here than either upstream |
-| MQTT/TLS connection | closed-source plugin | **full** — core report/request; pause/resume/stop convenience methods missing | P2 | add convenience commands |
-| Print upload (FTPS, port 990) | closed-source plugin | **none** | P1 | reliable only for <250KB files per A1 hardware limits (RESEARCH-P0-007.md) |
+| MQTT/TLS connection | closed-source plugin | **full** — core report/request + real pause/resume/stop/start convenience commands (`PrinterStatus.swift`) | — | none |
+| Print upload (FTPS, port 990) | closed-source plugin | **full** — real implicit-FTPS client (`FTPSUploader.swift`, `Network.framework`), verified against a real local TLS FTP test server (`FTPSUploaderIntegrationTests`) | — | reliable only for <250KB files per A1 hardware limits (RESEARCH-P0-007.md) remains a protocol-level printer constraint, not a NativeSlicerA1 gap; not hardware-verified against a real A1 |
 
 ## 15. Monitoring & camera features
 
 | Feature | BambuStudio/OrcaSlicer | NativeSlicerA1 | Priority | Gap |
 |---|---|---|---|---|
-| Print status monitoring UI | closed-source plugin | **none** (transport ready, no UI) | P1 | MQTT report parsing exists for AMS; needs general status JSON parsing + UI |
+| Print status monitoring UI | closed-source plugin | **partial** — real `PrintStatusReport` parsing exists and is tested against the documented report schema; UI wiring tracked under the Phase 6.5 usability milestone (Device workflow) | P1 | parsing done, UI pending |
 | Camera streaming | closed-source plugin, proprietary port-6000 protocol | **none** | P2 | reverse-engineered-only per RESEARCH-P0-010.md; 1fps limitation makes this a low-fidelity feature regardless |
 | Local failure detection | closed-source plugin | **none** | P3 | depends on monitoring UI first |
 

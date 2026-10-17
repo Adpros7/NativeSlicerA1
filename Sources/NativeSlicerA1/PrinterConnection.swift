@@ -5,7 +5,7 @@ import CocoaMQTT
 /// TLS on port 8883, fixed username `bblp`, password is the printer's LAN
 /// access code, self-signed certificate (no public CA — must be trusted
 /// explicitly, same as BambuStudio/OrcaSlicer/mosquitto `--insecure`).
-final class PrinterConnection {
+class PrinterConnection {
     enum Event {
         case connected
         case disconnected(Error?)
