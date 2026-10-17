@@ -186,6 +186,46 @@ final class ProjectDocument: ObservableObject {
         update(&cutConnectors[index])
     }
 
+    /// P4-013: places a default modifier sphere at the selected object's
+    /// own local mesh bounding-box center, selects it for editing.
+    /// Source mesh stays untouched — the modifier is a separate real
+    /// volume added only at slice time.
+    @Published var selectedModifierID: UUID?
+
+    func addModifier(to objectID: UUID) {
+        guard let index = objects.firstIndex(where: { $0.id == objectID }),
+              let mesh = meshes[objects[index].sourceMeshID], !mesh.vertices.isEmpty
+        else { return }
+        var lo = SIMD3<Float>(repeating: .greatestFiniteMagnitude)
+        var hi = SIMD3<Float>(repeating: -.greatestFiniteMagnitude)
+        var i = 0
+        while i < mesh.vertices.count {
+            let v = SIMD3(mesh.vertices[i], mesh.vertices[i + 1], mesh.vertices[i + 2])
+            lo = SIMD3(x: Swift.min(lo.x, v.x), y: Swift.min(lo.y, v.y), z: Swift.min(lo.z, v.z))
+            hi = SIMD3(x: Swift.max(hi.x, v.x), y: Swift.max(hi.y, v.y), z: Swift.max(hi.z, v.z))
+            i += 3
+        }
+        let center = (lo + hi) * 0.5
+        let radius = Swift.max((hi - lo).max() * 0.25, 1)
+        let modifier = ModifierPlacement(center: center, radius: radius)
+        objects[index].modifiers.append(modifier)
+        selectedModifierID = modifier.id
+    }
+
+    func removeSelectedModifier(from objectID: UUID) {
+        guard let index = objects.firstIndex(where: { $0.id == objectID }), let selectedModifierID else { return }
+        objects[index].modifiers.removeAll { $0.id == selectedModifierID }
+        self.selectedModifierID = nil
+    }
+
+    func updateSelectedModifier(in objectID: UUID, _ update: (inout ModifierPlacement) -> Void) {
+        guard let objIndex = objects.firstIndex(where: { $0.id == objectID }),
+              let selectedModifierID,
+              let modIndex = objects[objIndex].modifiers.firstIndex(where: { $0.id == selectedModifierID })
+        else { return }
+        update(&objects[objIndex].modifiers[modIndex])
+    }
+
     /// Performs the real cut (P4-006) via `SlicingEngine.cutModel` using
     /// the current `cutPlane`/`cutKeepMode`, replacing the selected
     /// object with the real resulting part(s) — matching the real
@@ -490,20 +530,40 @@ final class ProjectDocument: ObservableObject {
         var placed: [(mesh: LoadedMesh, transform: simd_float4x4)] = []
         var paintData: [[UInt8]] = []
         var layerHeightRanges: [[LayerHeightRange]] = []
-        for object in objects {
+        var modifierVolumes: [ModifierVolume] = []
+        for (index, object) in objects.enumerated() {
             guard let mesh = meshes[object.sourceMeshID] else { continue }
             placed.append((mesh, object.transform.matrix))
             paintData.append(paintStates[object.id]?.serialize() ?? [])
             layerHeightRanges.append(object.layerHeightRanges)
+            for modifier in object.modifiers {
+                var transform = matrix_identity_float4x4
+                transform.columns.3 = SIMD4(modifier.center.x, modifier.center.y, modifier.center.z, 1)
+                modifierVolumes.append(ModifierVolume(
+                    objectIndex: index, mesh: modifier.mesh, transform: transform,
+                    configEntries: modifier.configEntries))
+            }
         }
         let selection = profileSelection
         let outputPath = FileManager.default.temporaryDirectory.appendingPathComponent("\(UUID().uuidString).gcode").path
         Task.detached { [weak self] in
             do {
                 let loader = try BambuProfileLoader()
-                let segments = try SlicingJob.slice(
-                    objects: placed, loader: loader, selection: selection, outputPath: outputPath,
-                    paintData: paintData, layerHeightRanges: layerHeightRanges)
+                let segments: [ToolpathSegment]
+                if modifierVolumes.isEmpty {
+                    segments = try SlicingJob.slice(
+                        objects: placed, loader: loader, selection: selection, outputPath: outputPath,
+                        paintData: paintData, layerHeightRanges: layerHeightRanges)
+                } else {
+                    // P4-013: modifier meshes aren't yet threaded through
+                    // SlicingJob.slice's paint/layer-height-range
+                    // convenience wrapper — call the engine directly with
+                    // the same resolved config it would have used.
+                    let configEntries = try SlicingJob.resolvedConfigEntries(loader: loader, selection: selection)
+                    segments = try SlicingEngine.sliceToGCodeWithModifiers(
+                        objects: placed, modifiers: modifierVolumes,
+                        configEntries: configEntries, outputPath: outputPath)
+                }
                 await MainActor.run { [weak self] in
                     guard let self else { return }
                     self.toolpath = segments

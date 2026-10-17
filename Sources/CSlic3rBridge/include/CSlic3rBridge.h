@@ -352,6 +352,41 @@ int nsa1_slice_to_gcode_with_statistics(
 
 void nsa1_free_estimated_statistics(NSA1EstimatedStatistics *stats);
 
+/// P4-013 modifier mesh: a local per-volume config override region. Added
+/// as an ADDITIONAL `ModelVolumeType::PARAMETER_MODIFIER` volume on the
+/// `object_index`'th entry of a companion `objects` array — the real
+/// engine's own `region_config_from_model_volume`
+/// (`PrintApply.cpp`) then automatically derives a `PrintRegion` with
+/// `config_entries` applied wherever this volume's geometry intersects
+/// the parent part. `matrix16` is this volume's OWN local transform
+/// (relative to the parent object's coordinate space, same convention
+/// as `ModelVolume::set_transformation`), column-major 4x4, 16 doubles.
+/// Kept as a wholly separate struct/function (not new fields on
+/// `NSA1SceneObject`/`nsa1_slice_to_gcode`) — see
+/// `nsa1_append_plate_ids`'s doc comment for why extending an existing
+/// hot-path C-ABI signature is avoided in this bridge.
+typedef struct {
+    int32_t object_index;
+    const float *vertices;
+    size_t vertex_count;
+    const uint32_t *indices;
+    size_t index_count;
+    const double *matrix16;
+    const NSA1ConfigEntry *config_entries;
+    size_t config_entry_count;
+} NSA1ModifierVolume;
+
+/// Same as `nsa1_slice_to_gcode`, with an additional `modifiers` array
+/// (P4-013). Pass NULL/0 for `modifiers`/`modifier_count` to match
+/// `nsa1_slice_to_gcode`'s exact behavior.
+int nsa1_slice_to_gcode_with_modifiers(
+    const NSA1SceneObject *objects, size_t object_count,
+    const NSA1ModifierVolume *modifiers, size_t modifier_count,
+    const NSA1ConfigEntry *config_entries, size_t config_entry_count,
+    const char *out_gcode_path,
+    NSA1Toolpath **out_toolpath,
+    char **out_error);
+
 /// Numeric values map to `CalibrationWorkflow` in Swift. Kept as a fixed
 /// int32_t in the request so C callers do not depend on C++ enum layout.
 enum {

@@ -18,6 +18,8 @@ struct SceneObject: Identifiable, Equatable {
     /// P4-008 batch-job plate grouping — which `Plate.id` this object is
     /// currently placed on.
     var plateID: UInt64
+    /// P4-013 local per-volume config override regions (modifier meshes).
+    var modifiers: [ModifierPlacement] = []
 
     init(id: UUID = UUID(), sourceMeshID: UUID, transform: Transform = .identity, cutGroupID: UInt64? = nil, plateID: UInt64) {
         self.id = id
@@ -35,7 +37,7 @@ struct SceneObject: Identifiable, Equatable {
     static func == (lhs: SceneObject, rhs: SceneObject) -> Bool {
         lhs.id == rhs.id && lhs.sourceMeshID == rhs.sourceMeshID &&
             lhs.transform == rhs.transform && lhs.layerHeightRanges == rhs.layerHeightRanges &&
-            lhs.cutGroupID == rhs.cutGroupID && lhs.plateID == rhs.plateID
+            lhs.cutGroupID == rhs.cutGroupID && lhs.plateID == rhs.plateID && lhs.modifiers == rhs.modifiers
     }
 
     var transform: Transform { transformHistory.current }

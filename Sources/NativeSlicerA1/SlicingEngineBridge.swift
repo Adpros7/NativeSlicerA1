@@ -275,6 +275,59 @@ private func withNSA1ConfigEntries<R>(_ pending: [(key: String, value: String)],
     return build(0, &acc)
 }
 
+/// P4-013: one local per-volume config override region, in the same
+/// pending/pinned shape as `PendingSceneObject`. `objectIndex` ties it
+/// to a position in the companion `objects` array passed to
+/// `SlicingEngine.sliceToGCodeWithModifiers`.
+struct ModifierVolume: Sendable {
+    var objectIndex: Int
+    var mesh: LoadedMesh
+    /// Local transform relative to the parent object's own coordinate
+    /// space (matches `ModelVolume::set_transformation`'s convention).
+    var transform: simd_float4x4
+    var configEntries: [(key: String, value: String)]
+}
+
+private struct PendingModifierVolume {
+    let objectIndex: Int32
+    let vertices: [Float]
+    let indices: [UInt32]
+    let matrix16: [Double]
+    let configEntries: [(key: String, value: String)]
+}
+
+/// Pins each modifier's mesh/matrix/config-entry buffers for the call,
+/// mirroring `withNSA1SceneObjects`'s recursive lifetime pattern — each
+/// modifier additionally needs its own nested `withNSA1ConfigEntries`
+/// scope since every modifier carries its own config override list.
+private func withNSA1ModifierVolumes<R>(_ pending: [PendingModifierVolume], _ body: (UnsafePointer<NSA1ModifierVolume>?, Int) -> R) -> R {
+    func build(_ index: Int, _ acc: inout [NSA1ModifierVolume]) -> R {
+        guard index < pending.count else {
+            return acc.withUnsafeBufferPointer { body($0.baseAddress, acc.count) }
+        }
+        let mod = pending[index]
+        return mod.vertices.withUnsafeBufferPointer { vbuf in
+            mod.indices.withUnsafeBufferPointer { ibuf in
+                mod.matrix16.withUnsafeBufferPointer { mbuf in
+                    withNSA1ConfigEntries(mod.configEntries) { cfgPtr, cfgCount in
+                        acc.append(NSA1ModifierVolume(
+                            object_index: mod.objectIndex,
+                            vertices: vbuf.baseAddress, vertex_count: vbuf.count / 3,
+                            indices: ibuf.baseAddress, index_count: ibuf.count,
+                            matrix16: mbuf.baseAddress,
+                            config_entries: cfgPtr, config_entry_count: cfgCount
+                        ))
+                        return build(index + 1, &acc)
+                    }
+                }
+            }
+        }
+    }
+    var acc: [NSA1ModifierVolume] = []
+    acc.reserveCapacity(pending.count)
+    return build(0, &acc)
+}
+
 /// Mirrors upstream's `nsa1_cut_model` numeric `cut_mode` convention
 /// exactly (`CSlic3rBridge.h`: 0=both, 1=lower, 2=upper).
 enum CutMode: Int32, CaseIterable, Sendable {
@@ -642,6 +695,75 @@ enum SlicingEngine {
                         }
                     }
                     return r
+                }
+            }
+        }
+        guard result == 0 else {
+            throw SlicingEngineError.sliceFailed(errorMessage ?? "unknown engine error")
+        }
+        return toolpath
+    }
+
+    /// Same as `sliceToGCode`, with an additional `modifiers` array
+    /// (P4-013) — each modifier's real mesh becomes a real upstream
+    /// `ModelVolumeType::PARAMETER_MODIFIER` volume on its
+    /// `objectIndex`'th object; the real engine automatically derives a
+    /// `PrintRegion` with `configEntries` applied wherever that volume's
+    /// geometry intersects the parent part — no reimplemented spatial
+    /// lookup. Kept as a separate function from `sliceToGCode`, not an
+    /// added parameter — see `nsa1_append_plate_ids`'s doc comment for
+    /// why this bridge avoids extending a known-good hot-path signature.
+    @discardableResult
+    static func sliceToGCodeWithModifiers(
+        objects: [(mesh: LoadedMesh, transform: simd_float4x4)],
+        modifiers: [ModifierVolume],
+        configEntries: [(key: String, value: String)],
+        outputPath: String
+    ) throws -> [ToolpathSegment] {
+        let pendingObjects = objects.map { object in
+            PendingSceneObject(vertices: object.mesh.vertices, indices: object.mesh.indices, matrix16: flatten(object.transform))
+        }
+        let pendingModifiers = modifiers.map { mod in
+            PendingModifierVolume(
+                objectIndex: Int32(mod.objectIndex),
+                vertices: mod.mesh.vertices, indices: mod.mesh.indices,
+                matrix16: flatten(mod.transform),
+                configEntries: mod.configEntries
+            )
+        }
+        var errorMessage: String?
+        var toolpath: [ToolpathSegment] = []
+        let result = withNSA1SceneObjects(pendingObjects) { objPtr, objCount in
+            withNSA1ModifierVolumes(pendingModifiers) { modPtr, modCount in
+                withNSA1ConfigEntries(configEntries) { cfgPtr, cfgCount in
+                    outputPath.withCString { outPtr -> Int32 in
+                        var errPtr: UnsafeMutablePointer<CChar>?
+                        var toolpathPtr: UnsafeMutablePointer<NSA1Toolpath>?
+                        let r = nsa1_slice_to_gcode_with_modifiers(objPtr, objCount, modPtr, modCount, cfgPtr, cfgCount, outPtr, &toolpathPtr, &errPtr)
+                        if let errPtr {
+                            errorMessage = String(cString: errPtr)
+                            nsa1_free_string(errPtr)
+                        }
+                        if let toolpathPtr {
+                            defer { nsa1_free_toolpath(toolpathPtr) }
+                            let segs = UnsafeBufferPointer(start: toolpathPtr.pointee.segments, count: toolpathPtr.pointee.segment_count)
+                            toolpath = segs.map {
+                                ToolpathSegment(
+                                    start: SIMD3($0.start_x, $0.start_y, $0.start_z),
+                                    end: SIMD3($0.end_x, $0.end_y, $0.end_z),
+                                    width: $0.width,
+                                    height: $0.height,
+                                    isTravel: $0.is_travel != 0,
+                                    feedrate: $0.feedrate,
+                                    temperature: $0.temperature,
+                                    layerDuration: $0.layer_duration,
+                                    extruderID: Int32($0.extruder_id),
+                                    extrusionRole: $0.extrusion_role
+                                )
+                            }
+                        }
+                        return r
+                    }
                 }
             }
         }

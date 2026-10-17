@@ -677,8 +677,12 @@ void cut_model_at_height(Slic3r::Model &model, double height, Slic3r::ModelObjec
         object->ensure_on_bed();
     }
 }
-// Forward declaration (defined later in this file).
-Slic3r::Model build_model_from_objects(const NSA1SceneObject *objects, size_t object_count);
+// Forward declaration (defined later in this file). `modifiers`/
+// `modifier_count` default to none so every existing call site (cut,
+// arrange, store, plain slice) is completely unaffected.
+Slic3r::Model build_model_from_objects(
+    const NSA1SceneObject *objects, size_t object_count,
+    const NSA1ModifierVolume *modifiers = nullptr, size_t modifier_count = 0);
 // Helper: converts a Slic3r::ModelObject to an NSA1SceneObject.
 // The mesh is in the object's own instance-rotation/scale orientation
 // (baked in by ModelObject::cut's process_volume_cut) but NOT translated
@@ -974,7 +978,9 @@ extern "C" NSA1Mesh *nsa1_make_connector_mesh(
         return nullptr;
     }
 }
-Slic3r::Model build_model_from_objects(const NSA1SceneObject *objects, size_t object_count) {
+Slic3r::Model build_model_from_objects(
+    const NSA1SceneObject *objects, size_t object_count,
+    const NSA1ModifierVolume *modifiers, size_t modifier_count) {
     Slic3r::Model model;
     for (size_t i = 0; i < object_count; ++i) {
         const NSA1SceneObject &obj = objects[i];
@@ -1023,9 +1029,43 @@ Slic3r::Model build_model_from_objects(const NSA1SceneObject *objects, size_t ob
         trafo.matrix() = Eigen::Map<const Eigen::Matrix4d>(obj.matrix16);
         instance->set_transformation(Slic3r::Geometry::Transformation(trafo));
     }
+    for (size_t m = 0; m < modifier_count; ++m) {
+        // P4-013: a local per-volume config override region. Adding it
+        // as a real ModelVolumeType::PARAMETER_MODIFIER volume is
+        // sufficient — PrintApply.cpp's region_config_from_model_volume
+        // automatically derives a PrintRegion with this volume's own
+        // config wherever its geometry intersects the parent part; no
+        // separate spatial-lookup logic needs to be written here.
+        const NSA1ModifierVolume &mod = modifiers[m];
+        if (mod.object_index < 0 || static_cast<size_t>(mod.object_index) >= model.objects.size()) continue;
+        std::vector<Slic3r::Vec3f> vertices(mod.vertex_count);
+        for (size_t v = 0; v < mod.vertex_count; ++v) {
+            vertices[v] = Slic3r::Vec3f(mod.vertices[v * 3 + 0], mod.vertices[v * 3 + 1], mod.vertices[v * 3 + 2]);
+        }
+        std::vector<Slic3r::Vec3i> faces(mod.index_count / 3);
+        for (size_t f = 0; f < faces.size(); ++f) {
+            faces[f] = Slic3r::Vec3i(
+                static_cast<int>(mod.indices[f * 3 + 0]),
+                static_cast<int>(mod.indices[f * 3 + 1]),
+                static_cast<int>(mod.indices[f * 3 + 2]));
+        }
+        Slic3r::TriangleMesh mesh(vertices, faces);
+        Slic3r::ModelObject *model_object = model.objects[static_cast<size_t>(mod.object_index)];
+        Slic3r::ModelVolume *volume = model_object->add_volume(std::move(mesh), Slic3r::ModelVolumeType::PARAMETER_MODIFIER, /*modify_to_center_geometry=*/false);
+        if (mod.matrix16 != nullptr) {
+            Slic3r::Transform3d trafo;
+            trafo.matrix() = Eigen::Map<const Eigen::Matrix4d>(mod.matrix16);
+            volume->set_transformation(Slic3r::Geometry::Transformation(trafo));
+        }
+        Slic3r::ConfigSubstitutionContext substitutions(Slic3r::ForwardCompatibilitySubstitutionRule::Disable);
+        for (size_t c = 0; c < mod.config_entry_count; ++c) {
+            const std::string key = mod.config_entries[c].key;
+            if (Slic3r::print_config_def.get(key) == nullptr) continue;
+            volume->config.set_deserialize(key, mod.config_entries[c].value, substitutions);
+        }
+    }
     return model;
 }
-
 char *copy_c_string(const std::string &s) {
     char *out = new char[s.size() + 1];
     std::memcpy(out, s.c_str(), s.size() + 1);
@@ -1364,6 +1404,83 @@ extern "C" int nsa1_slice_to_gcode_with_statistics(
                 *out_statistics = out;
             }
         }
+    } catch (const std::exception &e) {
+        *out_error = copy_c_string(e.what());
+        return -1;
+    }
+}
+
+extern "C" int nsa1_slice_to_gcode_with_modifiers(
+    const NSA1SceneObject *objects, size_t object_count,
+    const NSA1ModifierVolume *modifiers, size_t modifier_count,
+    const NSA1ConfigEntry *config_entries, size_t config_entry_count,
+    const char *out_gcode_path,
+    NSA1Toolpath **out_toolpath,
+    char **out_error) {
+    *out_error = nullptr;
+    if (out_toolpath != nullptr) {
+        *out_toolpath = nullptr;
+    }
+    try {
+        if (object_count == 0) {
+            *out_error = copy_c_string("no objects to slice");
+            return -1;
+        }
+        Slic3r::Model model = build_model_from_objects(objects, object_count, modifiers, modifier_count);
+        Slic3r::DynamicPrintConfig config = build_full_config(config_entries, config_entry_count);
+
+        Slic3r::Print print;
+        print.apply(model, config);
+        Slic3r::StringObjectException err = print.validate();
+        if (!err.string.empty()) {
+            *out_error = copy_c_string(err.string);
+            return -1;
+        }
+        print.process();
+        Slic3r::GCodeProcessorResult result;
+        print.export_gcode(out_gcode_path, &result);
+
+        if (out_toolpath != nullptr) {
+            std::vector<NSA1ToolpathSegment> segments;
+            segments.reserve(result.moves.size());
+            bool have_prev = false;
+            Slic3r::Vec3f prev{0, 0, 0};
+            for (const auto &move : result.moves) {
+                const bool is_extrude = move.type == Slic3r::EMoveType::Extrude;
+                const bool is_travel = move.type == Slic3r::EMoveType::Travel;
+                if (!is_extrude && !is_travel) {
+                    have_prev = false;
+                    continue;
+                }
+                if (have_prev) {
+                    NSA1ToolpathSegment seg{};
+                    seg.start_x = prev.x();
+                    seg.start_y = prev.y();
+                    seg.start_z = prev.z();
+                    seg.end_x = move.position.x();
+                    seg.end_y = move.position.y();
+                    seg.end_z = move.position.z();
+                    seg.width = move.width;
+                    seg.height = move.height;
+                    seg.feedrate = move.feedrate;
+                    seg.temperature = move.temperature;
+                    seg.layer_duration = move.layer_duration;
+                    seg.extruder_id = move.extruder_id;
+                    seg.extrusion_role = static_cast<float>(move.extrusion_role);
+                    seg.is_travel = is_travel ? 1 : 0;
+                    segments.push_back(seg);
+                }
+                prev = move.position;
+                have_prev = true;
+            }
+            auto *out = new NSA1ToolpathSegment[segments.size()];
+            std::copy(segments.begin(), segments.end(), out);
+            auto *toolpath = new NSA1Toolpath();
+            toolpath->segments = out;
+            toolpath->segment_count = segments.size();
+            *out_toolpath = toolpath;
+        }
+        return 0;
     } catch (const std::exception &e) {
         *out_error = copy_c_string(e.what());
         return -1;

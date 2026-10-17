@@ -3,76 +3,96 @@
 ## Current phase
 Phase 1 (Application Foundation) and Phase 2's non-hardware items complete.
 Phase 3: P3-001 audit, P3-002 calibration, and P3-005 support painting
-complete. Phase 4: P4-001 unit detection, P4-003 (largely via P1-006),
-P4-004 cut (engine layer + real interactive cut-plane gizmo UI), P4-005
-connector presets, P4-006 connector customization, P4-007 connector
-reversibility, P4-008 multi-plate arrangement, P4-009 assembly previews,
-P4-010 auto-orient, P4-011 auto-arrange, P4-012 support blocker/enforcer
-painting, and P4-014 variable layer height complete. Only P4-002 (manual
-mesh repair, deferred pending an observed need) and P4-013 (modifier
-meshes) remain open in Phase 4. Phase 9 P9-007 is complete.
+complete. **Phase 4 (Geometry) is now complete** except P4-002 (manual
+mesh repair, explicitly deferred pending an observed real need — not a
+gap, a documented decision). Phase 9 P9-007 is complete.
 
 ## Last completed task
-P4-009: assembly/plate previews. Scoped as a REAL 2D top-down bed
-schematic (not a placeholder graphic) built from each object's actual
-world-space XY footprint, matching upstream's real intent ("does this
-fit, what's on this plate") without needing BambuStudio's full 3D
-thumbnail-rendering pipeline. `ProjectDocument.platePreview(bedWidth:
-bedHeight:) -> [PlatePreviewEntry]` reuses the same real
-`worldBoundingBox` the P4-006 cut plane already uses, projects into
-bed-relative coordinates, and flags objects that don't fit the bed.
-`PlatePreviewView.swift`: plate switcher + Add/Remove Plate + a
-`GeometryReader`-scaled 2D rendering of real object footprints (red
-outline for out-of-bounds, accent for fitting), wired to a new "Plates
-(N)…" toolbar button. `Tests/NativeSlicerA1Tests/PlatePreviewTests.swift`:
-3 tests (real bed-relative footprint math, out-of-bounds flagging, active-
-plate-only filtering). Full suite: 122 tests passing (3 repeated runs,
-clean — no C++ changes this time, so the P4-008 toolchain sensitivity
-doesn't apply here).
+P4-013: modifier meshes (local per-volume config override). Real upstream
+mechanism: adding a `ModelVolumeType::PARAMETER_MODIFIER` volume with its
+own `ModelConfig` is automatically picked up by `PrintApply.cpp`'s
+`region_config_from_model_volume` to derive a real `PrintRegion` wherever
+that volume's geometry intersects the parent part — confirmed via direct
+investigation before implementing, so zero spatial-lookup logic needed in
+this bridge.
 
-Before that (same session): P4-008 multi-plate arrangement — see the
-IMPORTANT toolchain-sensitivity finding below, still relevant for any
-future `storeThreeMF` signature changes. Pushed `a27811f`.
+- `NSA1ModifierVolume` (new C struct) + `nsa1_slice_to_gcode_with_modifiers`
+  (new sibling function, NOT a parameter on existing `nsa1_slice_to_gcode`
+  — see the toolchain-sensitivity finding below, still governing how new
+  C-ABI surface gets added). `build_model_from_objects` gained optional
+  `modifiers`/`modifier_count` params (defaulted, so every existing call
+  site is untouched) that add real `PARAMETER_MODIFIER` volumes with
+  `volume->config.set_deserialize(...)` per config entry.
+- `ModifierVolume.swift` (Swift bridge struct) + `SlicingEngine.
+  sliceToGCodeWithModifiers` + `withNSA1ModifierVolumes` pinning helper
+  (mirrors `withNSA1SceneObjects`, nested per-modifier
+  `withNSA1ConfigEntries` scope).
+- `ModifierPlacement` (`ModifierVolume.swift`, confusingly named the same
+  as the bridge struct — the Swift model type is `ModifierPlacement`):
+  object-local center/radius/infill-density%, a real closed UV-sphere
+  mesh generator (no engine primitive needed — any watertight mesh works
+  as a modifier volume). Scoped to the single most common real modifier
+  use case (infill density override) rather than a fully generic
+  config-key editor; `configEntries` is the seam to extend later.
+- `SceneObject.modifiers: [ModifierPlacement]`; `ProjectDocument.
+  addModifier(to:)`/`removeSelectedModifier(from:)`/
+  `updateSelectedModifier(in:_:)`; `slice()` builds the real
+  `ModifierVolume` array positionally and calls
+  `sliceToGCodeWithModifiers` instead of the plain path when any object
+  has modifiers (zero behavior change when none do).
+- `ModifierVolumesView.swift`: list/add/delete + radius/density sliders,
+  wired to a new "Modifiers…" toolbar button (mirrors "Layer Heights…").
 
-### IMPORTANT finding (still applies): a real, reproduced, bisected toolchain/binary-layout sensitivity
+`Tests/NativeSlicerA1Tests/ModifierVolumeTests.swift`: 2 tests against
+the real engine — a modifier overriding `sparse_infill_density` from a
+10% global baseline to 90% produces measurably more real extrusion
+(proves the real `PARAMETER_MODIFIER` + region-derivation pipeline, not
+a config echo); an invalid `objectIndex` is ignored, not fatal.
+`ProjectDocumentCutTests.testModifierPlacementStateManagement`: real
+add/edit/delete state-machine test. Full suite: 125 tests passing,
+verified via 4 repeated runs plus a final clean full rebuild (matching
+the discipline established after the P4-008 finding, since this task
+also touched the C++ bridge/new C-ABI surface).
+
+## IMPORTANT finding (still applies): a real, reproduced, bisected toolchain/binary-layout sensitivity
 While implementing P4-008's plate-id 3MF persistence, merely adding an
 unused `plateIDs: [UInt64] = []` parameter to
-`SlicingEngine.storeThreeMF`'s Swift signature (no behavior change —
-the parameter was provably dead) made an UNRELATED, already-passing
-test fail deterministically across the full suite while staying 100%
-green in isolation. Rigorously bisected (one change at a time, full
-clean rebuilds, 3-5 repeated full-suite runs per step). Root cause not
-fully understood (plausibly Swift/XCTest toolchain or linker-layout
-interaction). Fixed by keeping `storeThreeMF`'s signature byte-identical
-to its known-good form and adding new per-object 3MF metadata via a
-wholly separate function instead (see `storeThreeMFPlateIDs` /
-`nsa1_append_plate_ids` for the pattern to follow). **Any future change
-to `storeThreeMF`'s signature should re-run the full suite 3-5× (not
-once) before trusting a clean result.**
+`SlicingEngine.storeThreeMF`'s Swift signature (no behavior change) made
+an UNRELATED, already-passing test fail deterministically across the
+full suite while staying 100% green in isolation. Rigorously bisected.
+Root cause not fully understood. Fixed by keeping `storeThreeMF`'s
+signature byte-identical and adding new functionality via a WHOLLY
+SEPARATE function instead (`storeThreeMFPlateIDs`/`nsa1_append_plate_ids`
+for P4-008; `sliceToGCodeWithModifiers`/`nsa1_slice_to_gcode_with_
+modifiers` for P4-013 follows the same pattern). **Any future change to
+an existing hot-path C-ABI function's signature should re-run the full
+suite 3-5× (not once) before trusting a clean result; prefer adding a
+new sibling function instead.**
 
 ## Important technical decisions
-- **`storeThreeMF`'s signature is effectively frozen** — see the finding
-  above. New per-object 3MF metadata goes in a separate follow-up call.
+- **New C-ABI functionality goes in sibling functions, not new parameters
+  on existing ones** — see the finding above. `build_model_from_objects`
+  (a C++-internal, non-`extern "C"` helper) is the one exception: it's
+  safe to extend with defaulted parameters since it never crosses the
+  Swift/C ABI boundary directly.
+- **`ModelVolumeType::PARAMETER_MODIFIER` + per-volume `ModelConfig` is
+  sufficient for real local overrides** — `PrintApply.cpp` handles
+  region derivation automatically; confirmed via source investigation
+  before writing any code, then proven via a real before/after extrusion
+  comparison test.
 - **Two different 3MF formats exist in the vendored engine**:
-  `Format/3mf.cpp` (legacy, used throughout this bridge) vs.
-  `Format/bbs_3mf.cpp` (BambuStudio's separate full project format,
-  not used here).
+  `Format/3mf.cpp` (legacy, used throughout) vs. `Format/bbs_3mf.cpp`
+  (BambuStudio's separate full project format, not used here).
 - **Plate id is `UInt64`, not `UUID`**: matches `cutGroupID`'s existing
   scalar-persistence convention.
-- **P4-009 scoped to a real 2D footprint check, not 3D thumbnails**:
-  BambuStudio's actual thumbnail pipeline needs off-screen Metal
-  rendering infrastructure this app doesn't have; the 2D bed-footprint
-  view delivers the same real "preview" value (what's on this plate,
-  does it fit) with code that's directly testable and uses only
-  already-proven `worldBoundingBox` math.
 - **Connector mesh generator reuses upstream's exact scale math**; CGAL
   Boolean for real connector baking; cut-plane default normal is world
   +Z; P3-005/P4-012 paint state owned by `ProjectDocument`.
-- **Prior P4-010/P4-011 fixes**: 5 real root causes fixed in `4564ece`.
 
 ## Uncommitted changes
-P4-009 (plate preview) is implemented and fully tested (122/122, 3
-repeated runs) but not yet committed/pushed as of this update.
+P4-013 (modifier meshes) is implemented and fully tested (125/125,
+verified via 4 repeated runs + a clean full rebuild) but not yet
+committed/pushed as of this update.
 
 ## Known blockers
 None technical. P3-004 (multicolor painting) stays deferred per explicit
@@ -80,15 +100,22 @@ TODO.md P4/lowest-priority note. P4-002 manual repair remains conditional
 on observing a real mesh-repair need.
 
 ## Next recommended action
-1. Commit + push P4-009 (see Uncommitted changes above).
-2. P4-013: modifier meshes (local per-volume config override) — can
-   reuse the raycast + cut-plane gizmo infra for placement, needs a
-   spatial lookup during slicing for the modifier region.
-3. P3-004: multicolor/MMU painting — intentionally last (P4 priority).
-4. Phase 4 Geometry is otherwise complete; after P4-013, the natural
-   next phase is Phase 5 (Online Models) — but P5-001 flags a real
-   licensing/ToS risk requiring a design decision (delegate auth to
-   system browser) before implementation, not during.
+1. Commit + push P4-013 (see Uncommitted changes above).
+2. **Phase 4 (Geometry) is now complete** except P4-002 (intentionally
+   deferred). The natural next step is Phase 5 (Online Models) — but
+   P5-001 flags a real licensing/ToS risk requiring a design decision
+   (delegate auth to system browser, never store/proxy credentials)
+   before implementation, not during. Read Phase 5's TODO.md section in
+   full before starting any P5 task.
+3. Alternatively, P3-004 (multicolor/MMU painting) is the last remaining
+   Phase 3 item, intentionally deferred to P4 priority per TODO.md.
+4. A real gap noticed but NOT fixed this session (out of scope, needs its
+   own verification pass): `ProjectDocument.slice()` iterates ALL
+   `objects`, not `objectsOnActivePlate` — P4-008 added per-plate
+   grouping but the main slice path was never updated to respect it, so
+   multi-plate "batch jobs" currently slice every plate's objects
+   together. Worth a dedicated fix + test once Phase 5 or other P4-008
+   follow-up work touches this area.
 5. Minor pre-existing cleanup opportunity, still not yet addressed:
    `SlicingEngine.autoArrange`'s `UnsafePointer(meshData.vertices)`/
    `UnsafePointer(meshData.indices)` construction triggers the same
@@ -99,10 +126,11 @@ on observing a real mesh-repair need.
 
 ## Relevant commands
 - `swift build` / `swift test` / `swift run NativeSlicerA1`
+- `swift test --filter ModifierVolumeTests` — 2 real modifier-mesh tests
 - `swift test --filter PlatePreviewTests` — 3 real plate-preview tests
 - `swift test --filter MultiPlateTests` — 5 real multi-plate tests
 - `swift test --filter CutModelTests` — 7 real cut/connector-boolean tests
-- `swift test --filter ProjectDocumentCutTests` — 9 real cut/connector/undo tests
+- `swift test --filter ProjectDocumentCutTests` — 10 real cut/connector/modifier/undo tests
 - `swift test --filter CutGroupIDPersistenceTests` — 2 real cut_id/3MF tests
 - `swift test --filter ConnectorTests` — 6 real connector-mesh tests
 - `swift test --filter VariableLayerHeightTests` — 2 real layer-height-range tests
@@ -112,10 +140,10 @@ on observing a real mesh-repair need.
 - `cd vendor/BambuStudio/build/arm64 && ninja libslic3r libnest2d` — only
   for temporary upstream instrumentation; ALWAYS revert vendor sources
   afterward (`git -C vendor/BambuStudio checkout --`).
-- When touching `storeThreeMF`'s signature: run the FULL suite 3-5×
-  (`rm -rf .build && swift build && for i in 1 2 3; do swift test; done`)
-  before trusting a clean result — see the toolchain-sensitivity finding
-  above.
+- When touching an existing hot-path C-ABI function's signature: run the
+  FULL suite 3-5× (`rm -rf .build && swift build && for i in 1 2 3; do
+  swift test; done`) before trusting a clean result, or add a sibling
+  function instead — see the toolchain-sensitivity finding above.
 - Manual GUI smoke test: launch via a real `.app` bundle (the raw
   `.build/out/Products/Debug/NativeSlicerA1` executable run directly is
   NOT Dock-registered and exits when its launching terminal session

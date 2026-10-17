@@ -6,6 +6,7 @@ struct ContentView: View {
     @State private var showingCalibration = false
     @State private var showingSettings = false
     @State private var showingLayerHeights = false
+    @State private var showingModifiers = false
     @State private var showingPlatePreview = false
 
     var body: some View {
@@ -27,6 +28,8 @@ struct ContentView: View {
                 Button("Calibration…") { showingCalibration = true }
                 Button("Settings…") { showingSettings = true }
                 Button("Layer Heights…") { showingLayerHeights = true }
+                    .disabled(document.selection == nil)
+                Button("Modifiers…") { showingModifiers = true }
                     .disabled(document.selection == nil)
                 Button("Plates (\(document.plates.count))…") { showingPlatePreview = true }
                 Button(document.isSlicing ? "Slicing…" : "Slice", action: document.slice)
@@ -126,6 +129,11 @@ struct ContentView: View {
         .sheet(isPresented: $showingLayerHeights) {
             if let selection = document.selection {
                 LayerHeightRangesView(document: document, objectID: selection)
+            }
+        }
+        .sheet(isPresented: $showingModifiers) {
+            if let selection = document.selection {
+                ModifierVolumesView(document: document, objectID: selection)
             }
         }
         .sheet(isPresented: $showingCalibration) {

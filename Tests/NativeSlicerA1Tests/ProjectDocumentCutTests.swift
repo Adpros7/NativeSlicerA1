@@ -172,6 +172,35 @@ final class ProjectDocumentCutTests: XCTestCase {
         XCTAssertTrue(document.canUndoCut)
         XCTAssertFalse(document.canRedoCut)
     }
+
+    /// P4-013: adding a default modifier sphere must center it on the
+    /// real selected object's own local mesh bounding box, select it for
+    /// editing, and leave the source mesh/geometry untouched — editing
+    /// and deleting must affect only that one placement.
+    func testModifierPlacementStateManagement() throws {
+        let document = ProjectDocument()
+        importDirectly(cubeMesh(size: 20), into: document)
+        let objectID = try XCTUnwrap(document.objects.first?.id)
+
+        document.addModifier(to: objectID)
+        let modifier = try XCTUnwrap(document.objects.first?.modifiers.first)
+        XCTAssertEqual(modifier.center.x, 10, accuracy: 0.01)
+        XCTAssertEqual(modifier.center.y, 10, accuracy: 0.01)
+        XCTAssertEqual(modifier.center.z, 10, accuracy: 0.01)
+        XCTAssertEqual(document.selectedModifierID, modifier.id)
+
+        document.updateSelectedModifier(in: objectID) {
+            $0.radius = 8
+            $0.infillDensityPercent = 75
+        }
+        let updated = try XCTUnwrap(document.objects.first?.modifiers.first)
+        XCTAssertEqual(updated.radius, 8, accuracy: 0.001)
+        XCTAssertEqual(updated.configEntries.first?.value, "75%")
+
+        document.removeSelectedModifier(from: objectID)
+        XCTAssertTrue(document.objects.first?.modifiers.isEmpty ?? false)
+        XCTAssertNil(document.selectedModifierID)
+    }
     /// P4-007: cut lineage must survive a project save/reload, not just
     /// the raw bridge call — `ProjectDocument.save`/`load` must thread
     /// `cutGroupID` end to end.
