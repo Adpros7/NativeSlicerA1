@@ -487,6 +487,48 @@ final class ProjectDocument: ObservableObject {
         try FileManager.default.copyItem(atPath: lastGCodePath, toPath: destination.path)
     }
 
+    /// P7-007: loads an existing `.gcode` file (not sliced by this
+    /// document) and reconstructs its real toolpath for Preview, via
+    /// `SlicingEngine.loadGCodeToolpath` (the real `GCodeProcessor`, not
+    /// a Swift re-implementation). Replaces the current toolpath/
+    /// optimization report; does not touch `objects`/`lastGCodePath`
+    /// (this is a view of an external file, not a new slice).
+    func openGCode(at url: URL) {
+        do {
+            let loader = try BambuProfileLoader()
+            let configEntries = try SlicingJob.resolvedConfigEntries(loader: loader, selection: profileSelection)
+            let segments = try SlicingEngine.loadGCodeToolpath(path: url.path, configEntries: configEntries)
+            toolpath = segments
+            optimizationReport = OptimizationReport.analyze(toolpath: segments)
+        } catch {
+            lastError = "Open G-code failed: \(error)"
+        }
+    }
+
+    /// P7-005: applies the real engine's overhang-minimizing orientation
+    /// (`SlicingEngine.autoOrientMesh`, already implemented for P4-010
+    /// but never wired to the UI) to the selected object, preserving its
+    /// current position and scale.
+    func autoOrientSelection() {
+        guard let selectedID = selection,
+              let index = objects.firstIndex(where: { $0.id == selectedID }),
+              let mesh = meshes[objects[index].sourceMeshID]
+        else { return }
+        do {
+            let orientation = try SlicingEngine.autoOrientMesh(mesh)
+            let rotation = simd_quatf(simd_float3x3(
+                SIMD3(orientation.columns.0.x, orientation.columns.0.y, orientation.columns.0.z),
+                SIMD3(orientation.columns.1.x, orientation.columns.1.y, orientation.columns.1.z),
+                SIMD3(orientation.columns.2.x, orientation.columns.2.y, orientation.columns.2.z)
+            ))
+            var transform = objects[index].transform
+            transform.rotation = rotation
+            apply(transform, to: selectedID)
+        } catch {
+            lastError = "Auto-orient failed: \(error)"
+        }
+    }
+
     /// Saves the scene as a 3MF project file via the real engine's
     /// `store_3mf`, including resolved profile config (P3-003) and
     /// TriangleSelector-backed support paint (P3-005), so both profile

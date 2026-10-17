@@ -111,13 +111,13 @@ before the application is declared ready for users. Design:
 
 ## Phase 7: Intelligent Features
 
-- [ ] P7-001: Implement camera access.
-- [ ] P7-002: Implement local failure detection.
-- [ ] P7-003: Implement monitoring notifications.
-- [ ] P7-004: Implement optional automatic intervention.
-- [ ] P7-005: Implement orientation optimization.
-- [ ] P7-006: Implement slicing recommendations.
-- [ ] P7-007: Implement G-code-to-3MF reconstruction.
+- [x] P7-001: Implement camera access. `CameraStreamClient.swift`: real implicit-TLS client for the documented A1/P1 chamber-camera protocol (port 6000, 80-byte auth packet, 16-byte frame header + JPEG — `OpenBambuAPI/video.md`, cross-referenced against a second independent community implementation). Byte-exact auth-packet/header-parsing unit tests plus a real local-TLS-server integration test (`CameraStreamClientTests`, `CameraStreamClientIntegrationTests`). Wired into `DeviceView`'s "Fetch Snapshot" action (1 fps hardware limit → on-demand snapshot, not a continuous stream). **Not hardware-verified** against a real A1 (same gate as P2-002/P2-003).
+- [x] P7-002: Implement local failure detection. `DeviceSessionModel.handlePossibleFailure`: real detection from the live MQTT status stream (`gcode_state == FAILED` or a nonzero `print_error`), de-duplicated per distinct failure state.
+- [x] P7-003: Implement monitoring notifications. Same method posts a real local `UNUserNotificationCenter` notification on a detected failure.
+- [x] P7-004: Implement optional automatic intervention. `DeviceSessionModel.autoInterventionEnabled` (off by default, explicit opt-in) — when on, a detected failure also calls the real `pausePrint()` MQTT command. No AI/camera-based detection (A1 has no onboard detection hardware per RESEARCH-P0-010.md); intervention is purely status-code-driven.
+- [x] P7-005: Implement orientation optimization. `ProjectDocument.autoOrientSelection()` wires `SlicingEngine.autoOrientMesh` (already implemented for P4-010, had no UI entry point at all) to a real "Auto-Orient" toolbar button.
+- [x] P7-006: Implement slicing recommendations. `OptimizationReport.recommendations` derives tips strictly from this report's own already-real data (tool-change count, collision validity, purge volume) — never a generic/fabricated tip; empty when nothing actionable was observed. Surfaced in `OptimizationReportView`.
+- [~] P7-007: Implement G-code-to-3MF reconstruction. **Partial, accurately scoped:** `nsa1_load_gcode_toolpath`/`SlicingEngine.loadGCodeToolpath` loads an existing `.gcode` file and reconstructs its real toolpath via the vendored `GCodeProcessor` (the same parser BambuStudio's own G-code preview uses) for Preview — wired to a real "Open G-code…" action. It does **not** write the result back out as a `.3mf` project file; that would need a project-3MF-with-embedded-G-code writer this codebase doesn't have (same gap noted for Device "start a new print," Phase 6.5). Tests: `GCodeLoadTests` (round-trips a real sliced file end-to-end; rejects a missing file cleanly — an earlier implementation crashed with SIGSEGV on a missing file, fixed with an explicit existence check before calling into the engine).
 
 ## Phase 8: Production
 

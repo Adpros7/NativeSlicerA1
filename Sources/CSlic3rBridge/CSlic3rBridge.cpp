@@ -23,6 +23,7 @@
 #include "libslic3r/Arrange.hpp"
 #include "libslic3r/Geometry/ConvexHull.hpp"
 #include "libslic3r/TriangleSelector.hpp"
+#include "libslic3r/GCode/GCodeProcessor.hpp"
 #include <cstring>
 #include <array>
 #include <filesystem>
@@ -1870,4 +1871,74 @@ extern "C" void nsa1_free_calibration_result(NSA1CalibrationResult *result) {
 
 extern "C" void nsa1_free_string(char *s) {
     delete[] s;
+}
+
+extern "C" int nsa1_load_gcode_toolpath(
+    const char *gcode_path,
+    const NSA1ConfigEntry *config_entries, size_t config_entry_count,
+    NSA1Toolpath **out_toolpath,
+    char **out_error) {
+    *out_error = nullptr;
+    if (out_toolpath != nullptr) *out_toolpath = nullptr;
+    try {
+        if (!std::filesystem::exists(gcode_path)) {
+            *out_error = copy_c_string(std::string("file does not exist: ") + gcode_path);
+            return -1;
+        }
+        Slic3r::DynamicPrintConfig config = build_full_config(config_entries, config_entry_count);
+        Slic3r::PrintConfig print_config;
+        print_config.apply(config, true);
+        Slic3r::GCodeProcessor processor;
+        processor.apply_config(print_config);
+        processor.process_file(std::string(gcode_path));
+        const Slic3r::GCodeProcessorResult &result = processor.get_result();
+
+        if (out_toolpath != nullptr) {
+            // Same extraction as nsa1_slice_to_gcode (CSlic3rBridge.cpp
+            // ~line 1250) — consecutive-vertex polyline from real
+            // Extrude/Travel moves, broken on non-move events.
+            std::vector<NSA1ToolpathSegment> segments;
+            segments.reserve(result.moves.size());
+            bool have_prev = false;
+            Slic3r::Vec3f prev{0, 0, 0};
+            for (const auto &move : result.moves) {
+                const bool is_extrude = move.type == Slic3r::EMoveType::Extrude;
+                const bool is_travel = move.type == Slic3r::EMoveType::Travel;
+                if (!is_extrude && !is_travel) {
+                    have_prev = false;
+                    continue;
+                }
+                if (have_prev) {
+                    NSA1ToolpathSegment seg{};
+                    seg.start_x = prev.x();
+                    seg.start_y = prev.y();
+                    seg.start_z = prev.z();
+                    seg.end_x = move.position.x();
+                    seg.end_y = move.position.y();
+                    seg.end_z = move.position.z();
+                    seg.width = move.width;
+                    seg.height = move.height;
+                    seg.feedrate = move.feedrate;
+                    seg.temperature = move.temperature;
+                    seg.layer_duration = move.layer_duration;
+                    seg.extruder_id = move.extruder_id;
+                    seg.extrusion_role = static_cast<float>(move.extrusion_role);
+                    seg.is_travel = is_travel ? 1 : 0;
+                    segments.push_back(seg);
+                }
+                prev = move.position;
+                have_prev = true;
+            }
+            auto *out = new NSA1ToolpathSegment[segments.size()];
+            std::copy(segments.begin(), segments.end(), out);
+            auto *toolpath = new NSA1Toolpath();
+            toolpath->segments = out;
+            toolpath->segment_count = segments.size();
+            *out_toolpath = toolpath;
+        }
+        return 0;
+    } catch (const std::exception &e) {
+        *out_error = copy_c_string(e.what());
+        return -1;
+    }
 }

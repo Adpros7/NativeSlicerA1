@@ -523,6 +523,21 @@ int nsa1_cut_model(
 /// Safe to call with NULL.
 void nsa1_free_cut_results(NSA1SceneObject **objects, size_t count);
 
+/// P7-007: loads an EXISTING `.gcode` file (not one this app sliced —
+/// e.g. one exported earlier, or from another slicer) and reconstructs
+/// its real toolpath via the vendored engine's own
+/// `GCodeProcessor::process_file`, the same parser BambuStudio's G-code
+/// preview uses. `config_entries` seeds filament-diameter/nozzle
+/// context the parser needs for width/volume derivation; the move
+/// positions/extruder-id/role themselves come directly from the real
+/// file, independent of that config. Returns 0 on success
+/// (`*out_toolpath` owned, free with `nsa1_free_toolpath`), -1 on
+/// failure (`*out_error` owned, free with `nsa1_free_string`).
+int nsa1_load_gcode_toolpath(
+    const char *gcode_path,
+    const NSA1ConfigEntry *config_entries, size_t config_entry_count,
+    NSA1Toolpath **out_toolpath,
+    char **out_error);
 
 #ifdef __cplusplus
 }

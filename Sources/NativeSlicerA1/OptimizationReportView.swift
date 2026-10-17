@@ -53,6 +53,13 @@ struct OptimizationReportView: View {
                     }
                 }
 
+                if !report.recommendations.isEmpty {
+                    GroupBox("Recommendations") {
+                        ForEach(report.recommendations, id: \.self) { tip in
+                            Text("• \(tip)")
+                        }
+                    }
+                }
                 Button(document.isRefreshingOptimizationDetails ? "Checking…" : "Check Purge & Collision") {
                     Task { await document.refreshOptimizationDetails() }
                 }

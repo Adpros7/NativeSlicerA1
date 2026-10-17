@@ -1112,4 +1112,51 @@ enum SlicingEngine {
         return results
     }
 
+    /// P7-007: loads an existing `.gcode` file (e.g. previously exported
+    /// by this app, or produced by another slicer) and reconstructs its
+    /// real toolpath via the vendored engine's own `GCodeProcessor`, the
+    /// same parser BambuStudio's own G-code preview uses — not a
+    /// Swift-side re-implementation.
+    static func loadGCodeToolpath(
+        path: String,
+        configEntries: [(key: String, value: String)]
+    ) throws -> [ToolpathSegment] {
+        var toolpath: [ToolpathSegment] = []
+        var errorMessage: String?
+        let result = withNSA1ConfigEntries(configEntries) { cfgPtr, cfgCount in
+            path.withCString { pathPtr -> Int32 in
+                var errPtr: UnsafeMutablePointer<CChar>?
+                var toolpathPtr: UnsafeMutablePointer<NSA1Toolpath>?
+                let r = nsa1_load_gcode_toolpath(pathPtr, cfgPtr, cfgCount, &toolpathPtr, &errPtr)
+                if let errPtr {
+                    errorMessage = String(cString: errPtr)
+                    nsa1_free_string(errPtr)
+                }
+                if let toolpathPtr {
+                    defer { nsa1_free_toolpath(toolpathPtr) }
+                    let segs = UnsafeBufferPointer(start: toolpathPtr.pointee.segments, count: toolpathPtr.pointee.segment_count)
+                    toolpath = segs.map {
+                        ToolpathSegment(
+                            start: SIMD3($0.start_x, $0.start_y, $0.start_z),
+                            end: SIMD3($0.end_x, $0.end_y, $0.end_z),
+                            width: $0.width,
+                            height: $0.height,
+                            isTravel: $0.is_travel != 0,
+                            feedrate: $0.feedrate,
+                            temperature: $0.temperature,
+                            layerDuration: $0.layer_duration,
+                            extruderID: Int32($0.extruder_id),
+                            extrusionRole: $0.extrusion_role
+                        )
+                    }
+                }
+                return r
+            }
+        }
+        guard result == 0 else {
+            throw SlicingEngineError.sliceFailed(errorMessage ?? "unknown engine error")
+        }
+        return toolpath
+    }
+
 }

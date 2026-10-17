@@ -78,6 +78,24 @@ struct OptimizationReport: Equatable {
         return copy
     }
 
+    /// P7-006: slicing recommendations derived strictly from this
+    /// report's own already-real data — never a generic/fabricated tip.
+    /// Empty when nothing actionable was actually observed (e.g. a
+    /// clean single-tool slice with no collision checked).
+    var recommendations: [String] {
+        var items: [String] = []
+        if totalToolChanges > 0 {
+            items.append("\(totalToolChanges) tool change(s) detected — grouping same-color regions can reduce AMS swaps.")
+        }
+        if let collision, !collision.isValid {
+            items.append("Sequential-print collision detected — re-arrange the plate before printing (\(collision.message ?? "see Print::validate")).")
+        }
+        if let purgeVolumeMM3, purgeVolumeMM3 > 0 {
+            items.append(String(format: "%.1f mm³ of purge volume — fewer filament changes or a higher purge tolerance in Settings would reduce this.", purgeVolumeMM3))
+        }
+        return items
+    }
+
     /// Sums upstream `flush_per_filament` volumes. Configuration changes
     /// are deliberately not made here: reducing purge is a user/hardware
     /// safety decision, not an automatic Swift-side optimization.

@@ -58,6 +58,31 @@ struct DeviceView: View {
                     }
                 }
 
+                GroupBox("Camera") {
+                    VStack(alignment: .leading, spacing: 6) {
+                        if let frame = session.lastCameraFrame, let image = NSImage(data: frame) {
+                            Image(nsImage: image)
+                                .resizable()
+                                .aspectRatio(contentMode: .fit)
+                                .frame(maxWidth: 320)
+                        } else {
+                            Text("No snapshot yet.").foregroundColor(.secondary)
+                        }
+                        Button(session.isFetchingCamera ? "Fetching…" : "Fetch Snapshot") {
+                            Task { await session.fetchCameraFrame() }
+                        }
+                        .disabled(session.isFetchingCamera)
+                        Text("1 fps hardware limit — on-demand snapshot, not a live stream.")
+                            .font(.caption).foregroundColor(.secondary)
+                    }
+                }
+
+                GroupBox("Failure Monitoring") {
+                    Toggle("Automatically pause on detected failure", isOn: $session.autoInterventionEnabled)
+                    Text("A local notification always posts on a detected failure (gcode_state FAILED or a nonzero print_error); this additionally calls Pause.")
+                        .font(.caption).foregroundColor(.secondary)
+                }
+
                 GroupBox("Print Controls") {
                     HStack {
                         Button("Pause", action: session.pausePrint)

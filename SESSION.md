@@ -11,11 +11,43 @@ verifiable without hardware/OrcaSlicer**. The user-requested **Phase 6.5
 plate/grid/axes, real sidebar, Prepare/Preview/Device workflows, a real
 Device backend, and a critical production-blocking bug fix (below).
 Printer connectivity backend (P2-004/P2-005, FTPS/status/controls) is
-implemented; Device-workflow UI consumes it. Phase 7 remains pending.
+implemented; Device-workflow UI consumes it. **Phase 7 is complete for
+everything verifiable without hardware** (P7-001 camera client is real
+and protocol-tested but not hardware-verified, same gate as P2-002/
+P2-003; P7-007 is accurately scoped as partial — toolpath reconstruction
+only, not a `.3mf` writer).
 
 ## Last completed task
-Phase 6.5 usability milestone, plus the P2-004/P2-005 connectivity
-backend it depends on:
+Phase 7, plus Phase 6.5 usability milestone and the P2-004/P2-005
+connectivity backend they depend on:
+
+- **Phase 7 (this pass):** researched the real documented A1/P1 chamber
+  camera protocol (`OpenBambuAPI/video.md`, byte-exact — port 6000,
+  80-byte auth packet, 16-byte frame header + JPEG) rather than leaving
+  P7-001 as a fabricated "proprietary, unimplementable" blocker.
+  `CameraStreamClient.swift` implements it on the same `Network.framework`
+  TLS pattern as `FTPSUploader`; byte-exact unit tests plus a real local
+  TLS integration test (`CameraStreamClientIntegrationTests`) prove the
+  full handshake→auth→frame round trip. `DeviceSessionModel` adds real
+  local-failure detection from the live MQTT status stream (P7-002), a
+  real `UNUserNotificationCenter` alert (P7-003), and an explicit
+  opt-in auto-pause (P7-004, off by default). `ProjectDocument.
+  autoOrientSelection()` finally wires the already-implemented
+  `SlicingEngine.autoOrientMesh` (P4-010) to a UI button (P7-005) — it
+  had no entry point at all before. `OptimizationReport.recommendations`
+  (P7-006) derives tips strictly from the report's own already-real data
+  (tool changes, collision, purge volume), never a generic tip.
+  `nsa1_load_gcode_toolpath`/`SlicingEngine.loadGCodeToolpath` (P7-007)
+  loads an existing `.gcode` via the real `GCodeProcessor` for Preview —
+  accurately scoped as partial, since it does not write a `.3mf` back
+  out (same project-3MF-with-embedded-G-code gap as Device's "start a
+  new print"). **Bug caught during this work:** the new bridge function
+  crashed with SIGSEGV on a missing file (no existence check before
+  calling into the engine) — fixed with an explicit
+  `std::filesystem::exists` guard; `GCodeLoadTests` pins both the
+  success and the clean-failure path. 9 new regression tests.
+
+**Previously completed (Phase 6.5 usability + connectivity backend):**
 
 - **Connectivity backend:** `FTPSUploader.swift` — real implicit-FTPS
   client on `Network.framework` (TLS connect → `USER`/`PASS`/`TYPE I`/
@@ -154,8 +186,8 @@ after each regardless.
   matrices, so it needed no separate fix.
 
 ## Uncommitted changes
-None — Phase 6.5 and the connectivity backend are committed up through
-this point. Full suite currently passes 172/172.
+None once this commit lands — Phase 7 is complete for everything
+verifiable without hardware. Full suite currently passes 179/179.
 
 ## Known blockers
 - **MakerWorld actual auth/browse/download:** public API does not exist;
@@ -163,23 +195,25 @@ this point. Full suite currently passes 172/172.
 - **MyMiniFactory live OAuth/download:** requires user-supplied registered
   OAuth credentials and P8-006's packaged/Launch-Services-registered app.
   This environment's Cloudflare challenge prevents live API proof.
-- **FTPS/MQTT live hardware proof:** `FTPSUploaderIntegrationTests`
-  proves the real protocol against a real local TLS server; no physical
-  A1 is available to prove it against actual printer firmware.
+- **FTPS/MQTT/camera live hardware proof:** `FTPSUploaderIntegrationTests`/
+  `CameraStreamClientIntegrationTests` prove the real protocols against
+  real local TLS servers; no physical A1 is available to prove them
+  against actual printer firmware.
 - **P6-007 OrcaSlicer benchmark:** no OrcaSlicer binary installed/vendored
   here; building it from source is out of proportion to one benchmark.
 - **P6-008/P2-008 hardware validation:** no physical A1/AMS Lite is
   available.
-- **P2-009 (new):** background-thread engine calls hang; root cause
+- **P2-009:** background-thread engine calls hang; root cause
   undiagnosed. Currently mitigated by running synchronously on MainActor
   (UI freezes during slice/calibrate/optimization-details, does not
   hang).
 - P3-004 multicolor painting remains deferred; P4-002 needs an observed
   non-manifold repair case.
-- Device workflow "start a new print" needs a project-3MF-with-embedded-
-  G-code writer (BambuStudio's `Format/bbs_3mf.cpp` equivalent) this
-  codebase has never ported — real upload/pause/resume/stop work today,
-  starting a *new* print from this app does not yet.
+- Device workflow "start a new print" and P7-007's G-code-load both need
+  a project-3MF-with-embedded-G-code writer (BambuStudio's `Format/
+  bbs_3mf.cpp` equivalent) this codebase has never ported — real upload/
+  pause/resume/stop and loading an existing `.gcode` for Preview both
+  work today; writing one back out as a `.3mf` does not yet.
 
 ## Next recommended action
 1. Investigate P2-009 (background-thread engine hang) if slicing
@@ -187,20 +221,19 @@ this point. Full suite currently passes 172/172.
    that it's a freeze instead of a hang, but worth root-causing before
    P8 production packaging.
 2. Implement a project-3MF-with-embedded-G-code writer if "start a new
-   print from this app" becomes a priority (currently: upload + control
-   an already-started print works; starting one doesn't).
-3. Continue into the software-verifiable slice of Phase 7 (orientation
-   optimization already has a P4-010 base; slicing recommendations and
-   G-code-to-3MF reconstruction are feasible without hardware; camera
-   access and auto-intervention are not).
-4. P8 production packaging (P8-006 in particular) would unblock live
-   OAuth/FTPS/MakerWorld verification currently blocked on packaging.
+   print from this app" or "save a loaded G-code as a project" becomes a
+   priority.
+3. Begin Phase 8 (production packaging) — P8-006 in particular would
+   unblock live OAuth/FTPS/camera/MakerWorld verification currently
+   blocked purely on packaging, not on missing implementation.
 
 ## Relevant commands
 - `swift build` / `swift test` / `swift run NativeSlicerA1`
 - `swift test --filter BuildPlateGeometryTests` — 4 real plate/grid/axis tests
 - `swift test --filter ProjectDocumentExportArrangeTests` — export/arrange + the slice-hang regression test
 - `swift test --filter FTPSUploaderIntegrationTests` — real local TLS FTP upload
+- `swift test --filter CameraStreamClientIntegrationTests` — real local TLS camera-frame fetch
+- `swift test --filter GCodeLoadTests` — real round-trip of a loaded .gcode file
 - `swift test --filter MakerWorldLinksTests` — 4 real domain-trust tests
 - `swift test --filter ModifierVolumeTests` — 2 real modifier-mesh tests
 - `swift test --filter PlatePreviewTests` — 3 real plate-preview tests

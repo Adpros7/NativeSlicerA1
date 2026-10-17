@@ -68,9 +68,17 @@ struct ContentView: View {
                                 .foregroundColor(document.toolpathViewMode == mode ? .accentColor : .primary)
                         }
                     }
+                    // P7-007: load an externally-provided .gcode (not
+                    // sliced by this document) for Preview.
+                    Button("Open G-code…", action: openGCode)
                 }
 
                 if workflow == .prepare {
+                    // P7-005: applies SlicingEngine.autoOrientMesh
+                    // (already implemented for P4-010, previously never
+                    // wired to any button) to the selected object.
+                    Button("Auto-Orient", action: document.autoOrientSelection)
+                        .disabled(document.selection == nil)
                     // P3-005 support-paint controls: toggle paint mode,
                     // brush type, brush radius. Click/drag in the
                     // viewport while active paints the real engine's
@@ -258,6 +266,14 @@ struct ContentView: View {
         } catch {
             document.lastError = "Export failed: \(error)"
         }
+    }
+
+    private func openGCode() {
+        let panel = NSOpenPanel()
+        panel.allowedContentTypes = [UTType(filenameExtension: "gcode")!]
+        panel.canChooseDirectories = false
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        document.openGCode(at: url)
     }
 
     private var cutPlaneHeightBinding: Binding<Float> {

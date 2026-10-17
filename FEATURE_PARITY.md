@@ -132,6 +132,7 @@ Covered in §2 (auto-orient, auto-arrange) plus:
 | Print time estimation | full — `GCodeProcessor.cpp:2905+` (`TimeMachine`) | full (shared) | **none** | P1 | `nsa1_slice_to_gcode` already runs `GCodeProcessorResult` through the engine — `PrintEstimatedStatistics` is sitting there unused |
 | Filament usage (length/mass per extruder) | full — `GCodeProcessor.cpp:3407-3424` | full (shared) | **none** | P1 | same `GCodeProcessorResult`, different field |
 | Layer-by-layer scrubbing with time labels | full | full (shared) | **none** | P2 | depends on print-time estimation above |
+| Load/reconstruct an existing `.gcode` file's toolpath | full (G-code preview opens any `.gcode`) | full (shared) | **partial** — `nsa1_load_gcode_toolpath`/`SlicingEngine.loadGCodeToolpath` (P7-007), real `GCodeProcessor::process_file`, wired to "Open G-code…" in Preview | P2 | does not write the loaded file back out as a project `.3mf` |
 
 ## 13. Calibration tools (feeds directly into P3-002)
 
@@ -162,9 +163,9 @@ Shared pattern for all of these: load a bundled calibration model (3MF/STL), app
 
 | Feature | BambuStudio/OrcaSlicer | NativeSlicerA1 | Priority | Gap |
 |---|---|---|---|---|
-| Print status monitoring UI | closed-source plugin | **partial** — real `PrintStatusReport` parsing exists and is tested against the documented report schema; UI wiring tracked under the Phase 6.5 usability milestone (Device workflow) | P1 | parsing done, UI pending |
-| Camera streaming | closed-source plugin, proprietary port-6000 protocol | **none** | P2 | reverse-engineered-only per RESEARCH-P0-010.md; 1fps limitation makes this a low-fidelity feature regardless |
-| Local failure detection | closed-source plugin | **none** | P3 | depends on monitoring UI first |
+| Print status monitoring UI | closed-source plugin | **full** — real `PrintStatusReport` parsing + `DeviceView`'s live status display (Phase 6.5/7) | — | none |
+| Camera streaming | closed-source plugin, reverse-engineered port-6000 protocol | **partial** — real client for the documented protocol (`OpenBambuAPI/video.md`), byte-exact unit tests + a real local-TLS integration test; on-demand single-frame "Fetch Snapshot" (the A1's real 1fps hardware limit makes a continuous stream low-value regardless); not hardware-verified against a real printer | P2 | live-hardware proof only |
+| Local failure detection + notifications + opt-in auto-pause | closed-source plugin | **full** — real detection from the live MQTT status stream, a real local `UNUserNotificationCenter` alert, and an explicit opt-in auto-pause via the real `pausePrint()` MQTT command | — | none |
 
 ## 16. Online model repositories
 
