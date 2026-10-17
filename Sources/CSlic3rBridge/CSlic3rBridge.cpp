@@ -1348,6 +1348,11 @@ extern "C" int nsa1_slice_to_gcode_with_statistics(
                     seg.end_z = move.position.z();
                     seg.width = move.width;
                     seg.height = move.height;
+                    seg.feedrate = move.feedrate;
+                    seg.temperature = move.temperature;
+                    seg.layer_duration = move.layer_duration;
+                    seg.extruder_id = move.extruder_id;
+                    seg.extrusion_role = static_cast<float>(move.extrusion_role);
                     seg.is_travel = is_travel ? 1 : 0;
                     segments.push_back(seg);
                 }
@@ -1356,6 +1361,10 @@ extern "C" int nsa1_slice_to_gcode_with_statistics(
             }
             auto *out = new NSA1ToolpathSegment[segments.size()];
             std::copy(segments.begin(), segments.end(), out);
+            auto *toolpath = new NSA1Toolpath();
+            toolpath->segments = out;
+            toolpath->segment_count = segments.size();
+            *out_toolpath = toolpath;
             // P1-011: surface the engine's own estimated print statistics.
             if (out_statistics != nullptr) {
                 const auto &stats = result.print_statistics;
@@ -1404,6 +1413,7 @@ extern "C" int nsa1_slice_to_gcode_with_statistics(
                 *out_statistics = out;
             }
         }
+        return 0;
     } catch (const std::exception &e) {
         *out_error = copy_c_string(e.what());
         return -1;

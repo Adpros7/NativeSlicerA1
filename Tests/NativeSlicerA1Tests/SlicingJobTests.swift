@@ -51,6 +51,30 @@ final class SlicingJobTests: XCTestCase {
         XCTAssertGreaterThan(gcode.split(separator: "\n").count, 100)
     }
 
+    /// P6-002: tool/color analysis must use metadata emitted by the real
+    /// engine, not inferred from geometry. A real extrusion move therefore
+    /// carries the upstream nonzero extrusion role through the C ABI.
+    func testRealSliceCarriesEngineMoveMetadata() throws {
+        let loader = try BambuProfileLoader()
+        let outputDir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: outputDir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: outputDir) }
+
+        let result = try SlicingEngine.sliceToGCodeWithStatistics(
+            objects: [(mesh: cubeMesh(), transform: matrix_identity_float4x4)],
+            configEntries: try SlicingJob.resolvedConfigEntries(loader: loader),
+            outputPath: outputDir.appendingPathComponent("metadata.gcode").path
+        )
+        let toolpath = result.toolpath
+
+        XCTAssertGreaterThan(toolpath.count, 100, "statistics slicing must return the engine toolpath")
+        let extrusionRoles = Set(toolpath.filter { !$0.isTravel }.map(\.extrusionRole))
+        XCTAssertTrue(
+            extrusionRoles.contains { $0 != 0 },
+            "real extrusions must preserve GCodeProcessorResult.MoveVertex.role; got \(extrusionRoles)"
+        )
+    }
+
     /// Regression test for the `DynamicPrintConfig::full_print_config()`
     /// null-`keys_map` bug (ARCHITECTURE.md P1-008 "Upstream bug found and
     /// worked around"). Covers both affected option variants: `gcode_flavor`
