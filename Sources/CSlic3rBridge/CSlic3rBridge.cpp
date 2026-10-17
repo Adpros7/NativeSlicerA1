@@ -1523,6 +1523,46 @@ extern "C" void nsa1_free_estimated_statistics(NSA1EstimatedStatistics *stats) {
     delete stats;
 }
 
+extern "C" int nsa1_validate_collision(
+    const NSA1SceneObject *objects, size_t object_count,
+    const NSA1ConfigEntry *config_entries, size_t config_entry_count,
+    NSA1CollisionValidation **out_validation,
+    char **out_error) {
+    *out_error = nullptr;
+    if (out_validation != nullptr) *out_validation = nullptr;
+    try {
+        if (object_count == 0) {
+            *out_error = copy_c_string("no objects to validate");
+            return -1;
+        }
+        Slic3r::Model model = build_model_from_objects(objects, object_count);
+        Slic3r::DynamicPrintConfig config = build_full_config(config_entries, config_entry_count);
+
+        Slic3r::Print print;
+        print.apply(model, config);
+        Slic3r::StringObjectException err = print.validate();
+
+        if (out_validation != nullptr) {
+            auto *validation = new NSA1CollisionValidation();
+            validation->is_valid = err.string.empty() ? 1 : 0;
+            validation->exception_type = static_cast<int>(err.type);
+            validation->is_warning = err.is_warning ? 1 : 0;
+            validation->message = err.string.empty() ? nullptr : copy_c_string(err.string);
+            *out_validation = validation;
+        }
+        return 0;
+    } catch (const std::exception &e) {
+        *out_error = copy_c_string(e.what());
+        return -1;
+    }
+}
+
+extern "C" void nsa1_free_collision_validation(NSA1CollisionValidation *validation) {
+    if (!validation) return;
+    if (validation->message) delete[] validation->message;
+    delete validation;
+}
+
 extern "C" int nsa1_generate_calibration_gcode(
     const NSA1CalibrationRequest *request,
     const char *out_gcode_path,

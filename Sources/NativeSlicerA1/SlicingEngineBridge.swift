@@ -875,6 +875,58 @@ enum SlicingEngine {
         return (toolpath, stats!)
     }
 
+    /// P6-005: real upstream `Print::validate()` collision result
+    /// (`exceptionType` is the raw `Slic3r::StringExceptionType`; 3 =
+    /// object-collision-in-sequential-print, 4 = …-in-layer-print).
+    struct CollisionValidation: Sendable, Equatable {
+        let isValid: Bool
+        let exceptionType: Int32
+        let isWarning: Bool
+        let message: String?
+    }
+
+    /// Builds and applies a real `Print` from `objects`/`configEntries`
+    /// and calls its own `validate()` — the same check
+    /// `sliceToGCode`/`sliceToGCodeWithStatistics` already run before
+    /// slicing, exposed standalone (no G-code export) so plate
+    /// arrangement can be validated cheaply, e.g. after auto-arrange.
+    static func validateSequentialCollision(
+        objects: [(mesh: LoadedMesh, transform: simd_float4x4)],
+        configEntries: [(key: String, value: String)]
+    ) throws -> CollisionValidation {
+        let pendingObjects = objects.map {
+            PendingSceneObject(vertices: $0.mesh.vertices, indices: $0.mesh.indices, matrix16: flatten($0.transform))
+        }
+        var errorMessage: String?
+        var validation: CollisionValidation?
+        let result = withNSA1SceneObjects(pendingObjects) { objPtr, objCount in
+            withNSA1ConfigEntries(configEntries) { cfgPtr, cfgCount in
+                var errPtr: UnsafeMutablePointer<CChar>?
+                var validationPtr: UnsafeMutablePointer<NSA1CollisionValidation>?
+                let r = nsa1_validate_collision(objPtr, objCount, cfgPtr, cfgCount, &validationPtr, &errPtr)
+                if let errPtr {
+                    errorMessage = String(cString: errPtr)
+                    nsa1_free_string(errPtr)
+                }
+                if let validationPtr {
+                    defer { nsa1_free_collision_validation(validationPtr) }
+                    let v = validationPtr.pointee
+                    validation = CollisionValidation(
+                        isValid: v.is_valid != 0,
+                        exceptionType: Int32(v.exception_type),
+                        isWarning: v.is_warning != 0,
+                        message: v.message.map { String(cString: $0) }
+                    )
+                }
+                return r
+            }
+        }
+        guard result == 0 else {
+            throw SlicingEngineError.sliceFailed(errorMessage ?? "unknown engine error")
+        }
+        return validation!
+    }
+
     /// Calls the dedicated calibration C ABI. Generation remains entirely
     /// local: no printer connection, upload, or start-print operation is
     /// available through this API.

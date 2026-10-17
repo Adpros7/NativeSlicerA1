@@ -355,6 +355,34 @@ int nsa1_slice_to_gcode_with_statistics(
 
 void nsa1_free_estimated_statistics(NSA1EstimatedStatistics *stats);
 
+/// P6-005: real upstream `Print::validate()` collision result — the same
+/// sequential/by-object check `nsa1_slice_to_gcode` already runs before
+/// slicing, exposed standalone (no G-code export) so the UI can validate
+/// plate arrangement cheaply. `exception_type` is the raw
+/// `Slic3r::StringExceptionType` value (3 =
+/// STRING_EXCEPT_OBJECT_COLLISION_IN_SEQ_PRINT, 4 = …_IN_LAYER_PRINT).
+typedef struct {
+    int is_valid;        // 1 if Print::validate() found no error
+    int exception_type;  // raw Slic3r::StringExceptionType
+    int is_warning;
+    char *message;       // NULL when is_valid
+} NSA1CollisionValidation;
+
+/// Builds and applies a real `Print` from `objects`/`config_entries` and
+/// calls its own `validate()` (no slicing/G-code export). Returns 0 on
+/// success (check `(*out_validation)->is_valid`), -1 on failure to even
+/// construct/apply the print (`*out_error` set, free with
+/// `nsa1_free_string`). On success, `*out_validation` is a newly
+/// allocated `NSA1CollisionValidation` (free with
+/// `nsa1_free_collision_validation`).
+int nsa1_validate_collision(
+    const NSA1SceneObject *objects, size_t object_count,
+    const NSA1ConfigEntry *config_entries, size_t config_entry_count,
+    NSA1CollisionValidation **out_validation,
+    char **out_error);
+
+void nsa1_free_collision_validation(NSA1CollisionValidation *validation);
+
 /// P4-013 modifier mesh: a local per-volume config override region. Added
 /// as an ADDITIONAL `ModelVolumeType::PARAMETER_MODIFIER` volume on the
 /// `object_index`'th entry of a companion `objects` array — the real
