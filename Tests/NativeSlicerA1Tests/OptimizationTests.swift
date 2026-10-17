@@ -41,4 +41,8 @@ final class OptimizationTests: XCTestCase {
             LayerToolSchedule(z: 0.4, tools: [1, 0]),
         ])
     }
+
+    func testPurgeVolumeSumsOnlyUpstreamValues() {
+        XCTAssertEqual(OptimizationReport.purgeVolumeMM3([2.5, 0, 7.25]), 9.75)
+    }
 }

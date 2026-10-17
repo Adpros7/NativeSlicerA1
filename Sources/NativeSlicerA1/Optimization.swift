@@ -59,6 +59,13 @@ struct OptimizationReport: Equatable {
         )
     }
 
+    /// Sums upstream `flush_per_filament` volumes. Configuration changes
+    /// are deliberately not made here: reducing purge is a user/hardware
+    /// safety decision, not an automatic Swift-side optimization.
+    static func purgeVolumeMM3(_ upstreamFlushVolumes: [Double]) -> Double {
+        upstreamFlushVolumes.reduce(0, +)
+    }
+
     private struct TransitionKey: Hashable {
         let from: Int32
         let to: Int32

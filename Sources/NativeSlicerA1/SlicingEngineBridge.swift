@@ -792,6 +792,9 @@ enum SlicingEngine {
         let extruderVolumesMM3: [Double]
         let roleLengthsMM: [Double]
         let roleVolumesMM3: [Double]
+        /// Upstream `PrintEstimatedStatistics.flush_per_filament` values,
+        /// not a Swift geometric approximation.
+        let flushVolumesMM3: [Double]
     }
 
     @discardableResult
@@ -858,7 +861,8 @@ enum SlicingEngine {
                             totalSeamScarfDistance: s.total_seam_scarf_distance,
                             extruderVolumesMM3: UnsafeBufferPointer(start: s.extruder_volumes_mm3, count: Int(s.extruder_count)).map { $0 },
                             roleLengthsMM: UnsafeBufferPointer(start: s.role_lengths_mm, count: Int(s.role_count)).map { $0 },
-                            roleVolumesMM3: UnsafeBufferPointer(start: s.role_volumes_mm3, count: Int(s.role_count)).map { $0 }
+                            roleVolumesMM3: UnsafeBufferPointer(start: s.role_volumes_mm3, count: Int(s.role_count)).map { $0 },
+                            flushVolumesMM3: UnsafeBufferPointer(start: s.flush_volumes_mm3, count: Int(s.flush_filament_count)).map { $0 }
                         )
                     }
                     return r

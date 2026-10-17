@@ -13,5 +13,6 @@
 |---|---:|---:|---:|---:|---:|---:|---:|
 | Baseline `472bb91` (before P6 C-ABI repair) | 8.280 | 1.213 | 1.159 | 1.173 | 1.145 | 1.173 | 1.166 |
 | P6-001 `nsa1_slice_to_gcode_with_statistics` toolpath repair | 2.854 | 1.139 | 1.131 | 1.132 | 1.143 | 1.139 | 1.135 |
+| P6-003 upstream `flush_per_filament` statistics | 1.153 | 1.167 | 1.292 | 1.317 | 1.189 | 1.189 | 1.241 |
 
-**Interpretation:** warm median improved 2.7% (1.166 s → 1.135 s). The repair restores the statistics-path toolpath allocation/return and metadata but does not add a second engine pass or an extra copy beyond the existing C ABI output; this small change is within noisy Debug-process timing. It is recorded as a non-regression, not a broad performance claim.
+**Interpretation:** P6-001 warm median improved 2.7% (1.166 s → 1.135 s). The repair restores the statistics-path toolpath allocation/return and metadata but does not add a second engine pass or an extra copy beyond the existing C ABI output; this small change is within noisy Debug-process timing. P6-003's 1.241 s warm median is 6.4% slower than P6-001 but still within Debug-process noise; the only new cost is copying the upstream map once into the existing result struct. Neither measurement is a broad performance claim.

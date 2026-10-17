@@ -312,6 +312,9 @@ typedef struct {
     size_t role_count;
     const double *role_lengths_mm;
     const double *role_volumes_mm3;
+    // Actual upstream purge volume, indexed by filament/extruder id.
+    size_t flush_filament_count;
+    const double *flush_volumes_mm3;
 } NSA1EstimatedStatistics;
 
 /// Slices `object_count` placed objects (mesh + column-major placement

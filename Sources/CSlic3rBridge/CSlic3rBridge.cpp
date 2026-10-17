@@ -1411,6 +1411,17 @@ extern "C" int nsa1_slice_to_gcode_with_statistics(
                     out->role_volumes_mm3 = rv;
                 }
                 *out_statistics = out;
+                out->flush_filament_count = stats.flush_per_filament.size();
+                if (!out->flush_filament_count) {
+                    out->flush_volumes_mm3 = nullptr;
+                } else {
+                    auto *flush = new double[out->flush_filament_count];
+                    size_t i = 0;
+                    for (const auto &kv : stats.flush_per_filament) {
+                        flush[i++] = kv.second;
+                    }
+                    out->flush_volumes_mm3 = flush;
+                }
             }
         }
         return 0;
@@ -1508,6 +1519,7 @@ extern "C" void nsa1_free_estimated_statistics(NSA1EstimatedStatistics *stats) {
     if (stats->extruder_volumes_mm3) delete[] stats->extruder_volumes_mm3;
     if (stats->role_lengths_mm) delete[] stats->role_lengths_mm;
     if (stats->role_volumes_mm3) delete[] stats->role_volumes_mm3;
+    if (stats->flush_volumes_mm3) delete[] stats->flush_volumes_mm3;
     delete stats;
 }
 

@@ -68,6 +68,10 @@ final class SlicingJobTests: XCTestCase {
         let toolpath = result.toolpath
 
         XCTAssertGreaterThan(toolpath.count, 100, "statistics slicing must return the engine toolpath")
+        XCTAssertTrue(
+            result.statistics.flushVolumesMM3.allSatisfy { $0 == 0 },
+            "a one-tool A1 slice must not invent purge volume"
+        )
         let extrusionRoles = Set(toolpath.filter { !$0.isTravel }.map(\.extrusionRole))
         XCTAssertTrue(
             extrusionRoles.contains { $0 != 0 },
