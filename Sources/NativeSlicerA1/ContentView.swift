@@ -8,6 +8,7 @@ struct ContentView: View {
     @State private var showingLayerHeights = false
     @State private var showingModifiers = false
     @State private var showingPlatePreview = false
+    @State private var makerWorldAuth = MakerWorldAuthPresenter()
 
     var body: some View {
         NavigationSplitView {
@@ -33,11 +34,27 @@ struct ContentView: View {
                     .disabled(document.selection == nil)
                 Button("Plates (\(document.plates.count))…") { showingPlatePreview = true }
                 Button(document.isSlicing ? "Slicing…" : "Slice", action: document.slice)
-                // G-code view mode picker (P1-012)
                 Menu("View Mode") {
                     ForEach(ToolpathViewMode.allCases) { mode in
                         Button(mode.rawValue) { document.toolpathViewMode = mode }
                             .foregroundColor(document.toolpathViewMode == mode ? .accentColor : .primary)
+                    }
+                }
+                // P5-001/P5-002: MakerWorld integration, delegated
+                // entirely to the system browser — see
+                // MakerWorldLinks.swift's doc comment for why (the real
+                // bind-ticket SSO mechanism is closed-source in both
+                // upstreams). This app never embeds a webview or talks
+                // to any MakerWorld API; it only ever opens the real
+                // makerworld.com domain, gated by a real trust check.
+                Menu("MakerWorld") {
+                    Button("Sign In…") {
+                        if let window = NSApp.keyWindow ?? NSApp.windows.first {
+                            makerWorldAuth.presentSignIn(anchor: window)
+                        }
+                    }
+                    Button("Browse Models…") {
+                        MakerWorldLinks.openInSystemBrowser(MakerWorldLinks.browseURL)
                     }
                 }
                 // P3-005 support-paint controls: toggle paint mode,
