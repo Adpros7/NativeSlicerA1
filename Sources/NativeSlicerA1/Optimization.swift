@@ -17,13 +17,22 @@ struct LayerToolSchedule: Equatable {
     let tools: [Int32]
 }
 
-/// P6-002/P6-004: read-only analysis of the real engine toolpath returned
-/// by `GCodeProcessorResult`. The A1's default one-tool output correctly
-/// reports zero transitions; it never invents multi-color savings.
+/// P6-002/P6-004/P6-003/P6-005: read-only analysis of real engine
+/// output. The A1's default one-tool output correctly reports zero
+/// transitions; it never invents multi-color savings, purge volume, or
+/// a collision state the engine didn't actually compute.
 struct OptimizationReport: Equatable {
     let colorTransitions: [ColorTransition]
     let layerSchedules: [LayerToolSchedule]
     let totalToolChanges: Int
+    /// Sum of upstream `flush_per_filament` (P6-003). `nil` until a
+    /// caller has actually run `sliceToGCodeWithStatistics` and supplied
+    /// it via `withPurgeAndCollision` — never a Swift-estimated guess.
+    var purgeVolumeMM3: Double?
+    /// Real `Print::validate()` sequential-collision result (P6-005).
+    /// `nil` until a caller has actually run
+    /// `validateSequentialCollision` and supplied it.
+    var collision: SlicingEngine.CollisionValidation?
 
     static func analyze(toolpath: [ToolpathSegment]) -> OptimizationReport {
         var previousTool: Int32?
@@ -57,6 +66,16 @@ struct OptimizationReport: Equatable {
             layerSchedules: layerSchedules,
             totalToolChanges: colorTransitions.reduce(0) { $0 + $1.count }
         )
+    }
+
+    /// Attaches purge/collision data from separately-run real engine
+    /// calls (`sliceToGCodeWithStatistics`, `validateSequentialCollision`)
+    /// without re-deriving the color/layer analysis above.
+    func withPurgeAndCollision(purgeVolumeMM3: Double, collision: SlicingEngine.CollisionValidation) -> OptimizationReport {
+        var copy = self
+        copy.purgeVolumeMM3 = purgeVolumeMM3
+        copy.collision = collision
+        return copy
     }
 
     /// Sums upstream `flush_per_filament` volumes. Configuration changes

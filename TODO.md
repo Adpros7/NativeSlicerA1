@@ -84,14 +84,28 @@
 
 ## Phase 6: Optimization
 
-- [ ] P6-001: Establish conventional slicing benchmarks.
-- [ ] P6-002: Implement color-transition analysis.
-- [ ] P6-003: Implement purge optimization.
-- [ ] P6-004: Implement region scheduling.
-- [ ] P6-005: Implement collision validation.
-- [ ] P6-006: Implement optimization reports.
-- [ ] P6-007: Benchmark against OrcaSlicer.
-- [ ] P6-008: Validate optimized prints on hardware.
+- [x] P6-001: Establish conventional slicing benchmarks. `BENCHMARKS.md`: a real A1-profile cube slice (`SlicingJobTests.testSlicesCubeIntoRealGCode`), 5 runs per milestone, warm median tracked across every Phase 6 change — no regression found.
+- [x] P6-002: Implement color-transition analysis. `Optimization.swift`'s `OptimizationReport.analyze(toolpath:)` reads the real `GCodeProcessorResult.MoveVertex.extruder_id`/`.role` now bridged through `NSA1ToolpathSegment` (previously declared but unpopulated on two of three slice paths — fixed as part of this milestone) and counts adjacent-extrusion tool transitions; travel moves never create a false transition. Tests: `OptimizationTests`.
+- [x] P6-003: Implement purge optimization. Exposes the real upstream `PrintEstimatedStatistics::flush_per_filament` map (`GCodeProcessor.hpp:101`) through a new `flush_volumes_mm3`/`flush_filament_count` field on `NSA1EstimatedStatistics` and `EstimatedPrintStatistics.flushVolumesMM3`/`OptimizationReport.purgeVolumeMM3(_:)`. No automatic `flush_multiplier` reduction — purge-volume changes remain a user/profile decision. Tests: `SlicingJobTests.testRealSliceCarriesEngineMoveMetadata`, `OptimizationTests`.
+- [x] P6-004: Implement region scheduling. `OptimizationReport.layerSchedules` reports the real engine's final per-layer tool order (grouped from the same `GCodeProcessorResult` moves) — observes upstream `ToolOrdering`'s actual schedule, does not reschedule regions in Swift. Tests: `OptimizationTests.testLayerSchedulesAreAscendingAndKeepFirstSeenOrder`.
+- [x] P6-005: Implement collision validation. New sibling C ABI `nsa1_validate_collision`/`nsa1_free_collision_validation` builds/applies a real `Print` and calls its own `validate()` (same `STRING_EXCEPT_OBJECT_COLLISION_IN_SEQ_PRINT` check `sliceToGCode` already runs), exposed as `SlicingEngine.validateSequentialCollision(objects:configEntries:)`. Tests: `CollisionValidationTests` (real overlapping-cube collision, real spaced-cube validation).
+- [x] P6-006: Implement optimization reports. `OptimizationReportView.swift` + `ProjectDocument.optimizationReport`/`refreshOptimizationDetails()`: tool-transition/layer-schedule populate free from every slice's own toolpath; purge volume and collision status run two additional real engine calls only on explicit user action (never silently doubles every ordinary slice). Reachable from the toolbar (currently inside the overflow menu at default window width — tracked by the UI/UX usability milestone below). Tests: `OptimizationTests.testWithPurgeAndCollisionCarriesOnlySuppliedRealData`.
+- [ ] P6-007: Benchmark against OrcaSlicer. **Blocked:** no OrcaSlicer `.app`/CLI binary is installed or vendored in this environment (`mdfind`/`ls /Applications`/`which` all empty — `BENCHMARKS.md` §P6-007). Building OrcaSlicer from source solely for one benchmark is a separate multi-hour vendored-engine undertaking, out of proportion to this task per AGENTS.md §3/§15. Revisit with a user-supplied OrcaSlicer binary or an explicit decision to vendor it.
+- [ ] P6-008: Validate optimized prints on hardware. **Blocked:** no physical Bambu Lab A1/AMS Lite is available in this environment (AGENTS.md §11/§19/§20 — never claim hardware verification without hardware testing). All Phase 6 changes are verified against the real vendored `libslic3r` engine and the automated suite only.
+
+## Phase 6.5: Native Slicer Usability (user-requested milestone, 2026-10-16)
+
+The app currently launches to a blank viewport and a mostly-disabled
+toolbar with no plate/grid shown until a model is imported. This phase
+must complete, with every visible control wired to real functionality,
+before the application is declared ready for users. Design:
+`docs/superpowers/specs/2026-10-16-native-slicer-ui-ux-design.md`.
+
+- [ ] P6.5-001: Always render the A1 256×256×256mm build plate, 10mm grid, axes, and dimension labels in the viewport, even with zero objects.
+- [ ] P6.5-002: Populate the sidebar with real Printer/Filament/Process/Objects sections and a meaningful empty state (not a blank list).
+- [ ] P6.5-003: Establish Prepare/Preview/Device top-level workflows, each showing only real, reachable data for its state.
+- [ ] P6.5-004: Ensure import, arrange, slice, export, and print controls are reachable (no toolbar overflow hiding primary actions) and every control maps to an existing real operation.
+- [ ] P6.5-005: Add UI regression tests and screenshot-verify compact/standard/wide window widths in light and dark appearance.
 
 ## Phase 7: Intelligent Features
 

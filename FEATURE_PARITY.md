@@ -111,7 +111,7 @@ Covered in §2 (auto-orient, auto-arrange) plus:
 | Feature | BambuStudio | OrcaSlicer | NativeSlicerA1 | Priority | Gap |
 |---|---|---|---|---|---|
 | Wipe tower sizing/placement | full — `GCode/WipeTower.cpp:1752-1760`, `Print.cpp:1010-1013` | full (shared) | **none** | P4 | entire subsystem absent; see §9 — AMS Lite swap behavior differs from X1C's multi-nozzle wipe-tower model |
-| Purge volume calibration matrix | full — `Print.cpp:3971-3984` | full (shared, `WipeTower.cpp:1562`) | **none** | P4 | depends on wipe tower existing |
+| Purge volume calibration matrix | full — `Print.cpp:3971-3984` | full (shared, `WipeTower.cpp:1562`) | **partial** — real upstream `PrintEstimatedStatistics::flush_per_filament` (`GCodeProcessor.hpp:101`) exposed via `EstimatedPrintStatistics.flushVolumesMM3`/`OptimizationReport.purgeVolumeMM3(_:)` (P6-003); no wipe-tower sizing/placement UI | P4 | matrix-level purge *values* now real/exposed; wipe-tower geometry itself remains absent — not applicable to A1's AMS Lite swap model |
 | Purge G-code emission | full — `GCode.cpp:944-1062` | full (shared) | **none** | P4 | depends on wipe tower existing |
 
 ## 11. Sequential & by-object printing
@@ -119,7 +119,7 @@ Covered in §2 (auto-orient, auto-arrange) plus:
 | Feature | BambuStudio | OrcaSlicer | NativeSlicerA1 | Priority | Gap |
 |---|---|---|---|---|---|
 | `print_sequence` config (ByLayer/ByObject) | full — `PrintConfig.hpp` enum | full (shared) | **none** | P3 | A1 is single-material; by-object mainly helps multi-part batch jobs |
-| Sequential collision detection | full — `Print.cpp:602-946` (`sequential_print_clearance_valid`) | full (shared) | **none** | P4 | safety-relevant *if* by-object printing is ever enabled — must ship together with the config option, never the option alone |
+| Sequential collision detection | full — `Print.cpp:602-946` (`sequential_print_clearance_valid`) | full (shared) | **partial** — `nsa1_validate_collision`/`SlicingEngine.validateSequentialCollision` (P6-005) calls the real `Print::validate()` check standalone (no G-code export); no viewport collision-polygon overlay yet | P4 | the real check now runs and reports `STRING_EXCEPT_OBJECT_COLLISION_IN_SEQ_PRINT` accurately; visual highlighting of the colliding polygons (`collison_polygons` output param) is unexposed |
 | `ByObjectPrintData` + ordering | full — `ByObjectPrintData.hpp/.cpp` | none (different architecture) | **none** | P4 | depends on the above |
 | Per-object G-code generation | full — `GCode.cpp:3227-3232,1918,2328` | full (`GCode.cpp:2730-3344`, different structure) | **none** | P4 | depends on the above |
 

@@ -45,4 +45,15 @@ final class OptimizationTests: XCTestCase {
     func testPurgeVolumeSumsOnlyUpstreamValues() {
         XCTAssertEqual(OptimizationReport.purgeVolumeMM3([2.5, 0, 7.25]), 9.75)
     }
+
+    func testWithPurgeAndCollisionCarriesOnlySuppliedRealData() {
+        let base = OptimizationReport.analyze(toolpath: [segment(z: 0.2, tool: 0)])
+        let collision = SlicingEngine.CollisionValidation(isValid: true, exceptionType: 0, isWarning: false, message: nil)
+        let withExtras = base.withPurgeAndCollision(purgeVolumeMM3: 3.5, collision: collision)
+
+        XCTAssertEqual(withExtras.purgeVolumeMM3, 3.5)
+        XCTAssertEqual(withExtras.collision?.isValid, true)
+        XCTAssertNil(withExtras.collision?.message, "a valid collision state must not carry a leftover message")
+        XCTAssertEqual(withExtras.colorTransitions, base.colorTransitions, "merging purge/collision must not alter the already-computed color analysis")
+    }
 }

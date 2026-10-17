@@ -8,6 +8,7 @@ struct ContentView: View {
     @State private var showingLayerHeights = false
     @State private var showingModifiers = false
     @State private var showingPlatePreview = false
+    @State private var showingOptimizationReport = false
     @State private var showingMyMiniFactory = false
     @State private var makerWorldAuth = MakerWorldAuthPresenter()
 
@@ -35,6 +36,8 @@ struct ContentView: View {
                     .disabled(document.selection == nil)
                 Button("Plates (\(document.plates.count))…") { showingPlatePreview = true }
                 Button(document.isSlicing ? "Slicing…" : "Slice", action: document.slice)
+                Button("Optimization Report…") { showingOptimizationReport = true }
+                    .disabled(document.optimizationReport == nil)
                 Menu("View Mode") {
                     ForEach(ToolpathViewMode.allCases) { mode in
                         Button(mode.rawValue) { document.toolpathViewMode = mode }
@@ -164,6 +167,9 @@ struct ContentView: View {
         }
         .sheet(isPresented: $showingPlatePreview) {
             PlatePreviewView(document: document)
+        }
+        .sheet(isPresented: $showingOptimizationReport) {
+            OptimizationReportView(document: document)
         }
         .sheet(isPresented: $showingMyMiniFactory) {
             MyMiniFactoryView(document: document)

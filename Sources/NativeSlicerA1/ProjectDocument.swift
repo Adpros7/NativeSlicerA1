@@ -12,6 +12,16 @@ final class ProjectDocument: ObservableObject {
     @Published var selection: UUID?
     @Published var lastError: String?
     @Published private(set) var toolpath: [ToolpathSegment] = []
+    /// P6-006: real engine-derived color-transition/layer-schedule
+    /// analysis, updated free from each slice's own toolpath. Purge
+    /// volume/collision fields stay `nil` until
+    /// `refreshOptimizationDetails()` explicitly runs the two additional
+    /// real engine calls they need (P6-003/P6-005) — never computed
+    /// automatically on every slice, to avoid doubling slice cost.
+    @Published private(set) var optimizationReport: OptimizationReport?
+    /// True while `refreshOptimizationDetails()`'s extra real engine
+    /// calls are running.
+    @Published private(set) var isRefreshingOptimizationDetails = false
     @Published private(set) var isSlicing = false
     /// G-code toolpath view mode (P1-012): controls how segments are colored.
     /// G-code toolpath view mode (P1-012): controls how segments are colored.
@@ -40,6 +50,12 @@ final class ProjectDocument: ObservableObject {
     /// Real `TriangleSelector`-backed paint session per object, created
     /// lazily on first paint stroke. Absent entries mean "unpainted".
     private var paintStates: [UUID: SupportPaintState] = [:]
+    /// The exact placement `slice()` last used, cached so
+    /// `refreshOptimizationDetails()` can re-run the two additional real
+    /// engine calls (statistics + collision) on identical geometry
+    /// without re-collecting it from `objects`/`meshes`.
+    private var lastSlicedPlacement: [(mesh: LoadedMesh, transform: simd_float4x4)] = []
+    private var lastSlicedHadModifiers = false
 
     /// Paints a spherical brush stroke at `localPoint` (the target
     /// object's own local mesh coordinates, e.g. from
@@ -567,6 +583,9 @@ final class ProjectDocument: ObservableObject {
                 await MainActor.run { [weak self] in
                     guard let self else { return }
                     self.toolpath = segments
+                    self.optimizationReport = OptimizationReport.analyze(toolpath: segments)
+                    self.lastSlicedPlacement = placed
+                    self.lastSlicedHadModifiers = !modifierVolumes.isEmpty
                     self.isSlicing = false
                 }
             } catch {
@@ -577,6 +596,47 @@ final class ProjectDocument: ObservableObject {
                 }
             }
         }
+    }
+
+    /// P6-003/P6-005: runs two additional real engine calls (a purge-
+    /// volume statistics slice and a standalone sequential-collision
+    /// validation) against the exact placement `slice()` last used, and
+    /// merges their real output into `optimizationReport`. Explicit,
+    /// on-demand only — `slice()` never calls this automatically, since
+    /// it would silently double the cost of every ordinary slice.
+    func refreshOptimizationDetails() async {
+        guard let report = optimizationReport, !lastSlicedPlacement.isEmpty, !isRefreshingOptimizationDetails else { return }
+        guard !lastSlicedHadModifiers else {
+            lastError = "Purge/collision details aren't available yet for a slice that used modifier volumes."
+            return
+        }
+        isRefreshingOptimizationDetails = true
+        let placed = lastSlicedPlacement
+        let selection = profileSelection
+        await Task.detached { [weak self] in
+            do {
+                let loader = try BambuProfileLoader()
+                let configEntries = try SlicingJob.resolvedConfigEntries(loader: loader, selection: selection)
+                let outputPath = FileManager.default.temporaryDirectory.appendingPathComponent("\(UUID().uuidString).gcode").path
+                let statsResult = try SlicingEngine.sliceToGCodeWithStatistics(
+                    objects: placed, configEntries: configEntries, outputPath: outputPath)
+                let collision = try SlicingEngine.validateSequentialCollision(objects: placed, configEntries: configEntries)
+                await MainActor.run { [weak self] in
+                    guard let self else { return }
+                    self.optimizationReport = report.withPurgeAndCollision(
+                        purgeVolumeMM3: OptimizationReport.purgeVolumeMM3(statsResult.statistics.flushVolumesMM3),
+                        collision: collision
+                    )
+                    self.isRefreshingOptimizationDetails = false
+                }
+            } catch {
+                await MainActor.run { [weak self] in
+                    guard let self else { return }
+                    self.lastError = "Optimization details failed: \(error)"
+                    self.isRefreshingOptimizationDetails = false
+                }
+            }
+        }.value
     }
 
     /// Runs a flow-rate calibration slice (pass 1: 0.80→1.20, 0.05 step)
