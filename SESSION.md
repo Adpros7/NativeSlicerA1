@@ -1,68 +1,51 @@
 # Session State
 
 ## Current phase
-Phase 1 (Application Foundation) and Phase 2's non-hardware items complete.
-Phase 3: P3-001 audit, P3-002 calibration, and P3-005 support painting
-complete. **Phase 4 (Geometry) is fully complete** except P4-002
-(intentionally deferred pending an observed real need). Phase 5 (Online
-Models): P5-001/P5-002 complete (scoped to what's actually safe/real);
-P5-003/004/005 are genuinely blocked (documented in TODO.md, not
-silently skipped — see below). Phase 9 P9-007 is complete.
+Phase 1 and Phase 4 (except conditional P4-002 repair) are complete. Phase
+5 is **not complete**: MakerWorld has only an intentionally safe
+trusted-browser handoff, not actual authentication, browsing, or downloads.
+Phase 6 investigation is complete and implementation is next. Phase 2's
+remaining software connectivity gaps (upload/status/control) and Phase 7
+remain pending.
 
 ## Last completed task
-P5-001/P5-002: MakerWorld integration, scoped after an explicit user
-design decision (asked via the `ask` tool, since TODO.md itself flags a
-real licensing/ToS risk and says to resolve this before implementation):
-delegate entirely to the system browser via `ASWebAuthenticationSession`.
+Phase 5 audit and a documented alternative-repository integration are
+implemented but not yet committed:
 
-Investigation first (RESEARCH-P0-011-CONNECTIVITY.md, already in the
-repo): MakerWorld's real SSO mechanism (`func_request_bind_ticket`,
-`NetworkAgent.cpp`) is closed-source in BOTH BambuStudio and OrcaSlicer —
-it wraps a proprietary `bambu_networking` plugin binary with zero public
-API documentation. There is nothing to reimplement; reverse-engineering
-Bambu's internal endpoints would itself be the ToS risk the research doc
-warns about. So P5-001/P5-002 are scoped to exactly what's real and safe:
+- The former P5-001/P5-002 completion claim was corrected. Opening
+  `makerworld.com` with `ASWebAuthenticationSession` delegates to an
+  external site; NativeSlicerA1 cannot observe login, query models, render
+  results, receive a selected model, or download it. `TODO.md` and
+  `FEATURE_PARITY.md` now leave actual MakerWorld auth/browse/download open
+  and record the closed-source bind-ticket blocker precisely.
+- `RESEARCH-P5-MODEL-REPOSITORIES.md` evaluates public alternatives:
+  Thingiverse and MyMiniFactory both presented Cloudflare challenges from
+  this environment (no bypass attempted); Printables has no documented
+  public API; Cults3D's documented GraphQL API excludes download files.
+  MyMiniFactory is selected because its official OpenAPI spec + OAuth
+  instructions explicitly document search, file metadata, and the
+  OAuth-only download URLs.
+- `MyMiniFactoryClient.swift`, `MyMiniFactoryAuth.swift`, and
+  `MyMiniFactoryView.swift` implement a genuine in-app MyMiniFactory
+  integration: API-key catalog search, OAuth authorization-code exchange,
+  Keychain-only credential/token storage, OAuth bearer download, and direct
+  STL/3MF import through the existing `ProjectDocument.importModel` path.
+  It is not an external-browser workaround.
+- `Resources/Info.plist` declares the OAuth callback scheme and is embedded
+  in the executable's `__TEXT,__info_plist` section. `plutil -lint` and
+  `otool -l` verified the embedded section. OS callback routing still
+  requires P8-006's packaged, Launch-Services-registered `.app`, so
+  end-to-end OAuth and live API verification remain honest blockers.
+- New regression coverage: 5 real Keychain round-trip/delete tests and 9
+  mock-transport API/OAuth/download tests. `swift test`: 143 tests passed.
+  A temporary `.app` with the production plist launched successfully and a
+  captured macOS screenshot confirms the native app surface.
 
-- `MakerWorldLinks.swift`: a domain-trust whitelist (`isTrusted`) gating
-  every URL this app will ever hand to the system — real domains only
-  (`makerworld.com`, `makerworld.com.cn` — both cited as exact literals
-  from `.research/BambuStudio/src/slic3r/GUI/GUI_App.cpp:1608,1611,1639`
-  — plus the two real CDN domains from RESEARCH-P0-011-CONNECTIVITY.md
-  §3.2). Rejects lookalikes (`evil-makerworld.com`,
-  `makerworld.com.evil.example`) and non-HTTPS. `openInSystemBrowser` is
-  the single chokepoint every MakerWorld URL goes through — refuses an
-  untrusted URL rather than silently opening it.
-- `MakerWorldAuthPresenter`: wraps `ASWebAuthenticationSession` to open
-  the real `makerworld.com` login in a system auth sheet. Honestly
-  documented limitation: MakerWorld has no documented OAuth redirect
-  scheme for third-party apps, so this app cannot detect "signed in" as
-  a completion callback the way a real OAuth flow would — the user logs
-  in with their real Bambu account directly on Bambu's own domain (this
-  app never sees credentials) and dismisses the sheet manually.
-  `prefersEphemeralWebBrowserSession = false` so the session persists in
-  the shared system browser session, same as a normal login.
-- ContentView: a "MakerWorld" menu with "Sign In…" and "Browse Models…".
-
-`Tests/NativeSlicerA1Tests/MakerWorldLinksTests.swift`: 4 tests — real
-domains trusted, lookalike/non-HTTPS domains rejected, the app's own
-sign-in/browse URLs pass their own trust check, `openInSystemBrowser`
-refuses an untrusted URL. Full suite: 129 tests passing (no C++ changes
-this task — pure Swift addition, no toolchain-sensitivity risk).
-
-P5-003 (model downloading)/P5-004 (direct slicing workflow)/P5-005
-(additional repos) are documented in TODO.md as **genuinely blocked**,
-not silently skipped: MakerWorld's real "open in slicer" flow
-(`makerworld_model_open` JS command) only exists inside BambuStudio's
-embedded webview, which this app deliberately doesn't build (the P5-001
-licensing decision). With no public download API and no embedded
-webview, there's no remaining integration surface — a user who downloads
-a `.3mf` from MakerWorld in their browser already gets full value from
-this app's existing Import (P1-004/P1-005) and the complete real
-slicing/cut/connector/modifier pipeline, with zero new code needed.
-
-Before that (same session): P4-013 modifier meshes completed Phase 4
-(Geometry) in full except the intentionally-deferred P4-002. Pushed
-`eea7709`.
+Phase 6 source investigation (`agent://VisitingNarwhal`, summarized below)
+established that all required optimization primitives already exist in the
+vendored engine. Reuse them through new sibling C-ABI functions; never
+reimplement tool ordering, purge calculations, or collision geometry in
+Swift.
 
 ## IMPORTANT finding (still applies): a real, reproduced, bisected toolchain/binary-layout sensitivity
 While implementing P4-008's plate-id 3MF persistence, merely adding an
@@ -97,48 +80,29 @@ trusting a clean result; prefer adding a new sibling function instead.**
   (BambuStudio's separate full project format, not used here).
 
 ## Uncommitted changes
-P5-001/P5-002 (MakerWorld browser delegation) is implemented and fully
-tested (129/129) but not yet committed/pushed as of this update.
+Phase 5 audit + MyMiniFactory integration, documentation, Info.plist
+embedding, and 14 new regression tests. Full suite currently passes
+143/143. Commit after a focused diff review.
 
 ## Known blockers
-P5-003/004/005: genuinely blocked by the same closed-source MakerWorld
-API constraint (documented in TODO.md, see above) — not a technical gap
-to close, revisit only if MakerWorld publishes a public API. P3-004
-(multicolor painting) stays deferred per explicit TODO.md P4/lowest-
-priority note. P4-002 manual repair remains conditional on observing a
-real mesh-repair need.
+- **MakerWorld actual auth/browse/download:** public API does not exist;
+  reverse-engineering bind-ticket endpoints remains out of scope.
+- **MyMiniFactory live OAuth/download:** requires user-supplied registered
+  OAuth credentials and P8-006's packaged/Launch-Services-registered app.
+  This environment's Cloudflare challenge prevents live API proof.
+- **P6-008 hardware validation:** no physical A1/AMS Lite is available.
+- P3-004 multicolor painting remains deferred; P4-002 needs an observed
+  non-manifold repair case.
 
 ## Next recommended action
-1. Commit + push P5-001/P5-002 (see Uncommitted changes above).
-2. Phase 4 (Geometry) and the real portion of Phase 5 (Online Models)
-   are now both complete. Natural next steps, in priority order:
-   - Phase 6 (Optimization): P6-001 benchmarks, P6-002..006 (color-
-     transition/purge/region/collision optimization, reports) — pure
-     software work building directly on the now-complete real engine
-     integration, no legal/hardware ambiguity.
-   - Phase 7 (Intelligent Features): P7-001 camera access, P7-002..004
-     (failure detection, monitoring, intervention) — per
-     RESEARCH-P0-011-CONNECTIVITY.md §2.2/2.4, camera needs a
-     reverse-engineered proprietary port-6000 protocol (1 fps, A1-
-     specific) and failure detection needs real MQTT report field
-     parsing (`PrinterConnection.swift` transport already exists,
-     structured parsing doesn't) — needs real/simulated printer access
-     to verify meaningfully, unlike Phase 6's pure-software work.
-   - The connectivity research doc (RESEARCH-P0-011-CONNECTIVITY.md)
-     also flags real, concrete gaps worth independent pickup regardless
-     of phase: FTPS print upload (P1, ≤250KB A1 limit documented), print
-     control convenience methods (pause/resume/stop/start wrappers over
-     the existing generic `send()`), and structured MQTT status-report
-     parsing + monitoring UI — none require the MakerWorld ToS
-     boundary and all have concrete acceptance criteria already written.
-3. A real gap noticed in a prior session but NOT yet fixed: `ProjectDocument.
-   slice()` iterates ALL `objects`, not `objectsOnActivePlate` — P4-008
-   added per-plate grouping but the main slice path never respects it.
-4. Minor pre-existing cleanup: `SlicingEngine.autoArrange`'s
-   `UnsafePointer(meshData.vertices)`/`UnsafePointer(meshData.indices)`
-   construction triggers the same dangling-temporary-pointer warning
-   fixed in `cutModel` — not yet reproduced as a failure, worth an
-   eventual fix using `withNSA1SceneObjects`.
+1. Commit/push the Phase 5 audit/integration milestone.
+2. Execute Phase 6 using existing upstream data: `GCodeProcessorResult`
+   contains tool/color IDs and flush statistics; `Print::tool_ordering()`
+   supplies per-layer order; `Print::validate()` has actual collision
+   checks and visualization polygons. Add **sibling** bridge APIs only,
+   then benchmark before/after and expose a report.
+3. After Phase 6, implement software-verifiable FTPS/MQTT/control gaps,
+   then audit/implement feasible Phase 7 tasks.
 
 ## Relevant commands
 - `swift build` / `swift test` / `swift run NativeSlicerA1`

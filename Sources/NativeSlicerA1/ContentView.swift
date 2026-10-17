@@ -8,6 +8,7 @@ struct ContentView: View {
     @State private var showingLayerHeights = false
     @State private var showingModifiers = false
     @State private var showingPlatePreview = false
+    @State private var showingMyMiniFactory = false
     @State private var makerWorldAuth = MakerWorldAuthPresenter()
 
     var body: some View {
@@ -57,6 +58,11 @@ struct ContentView: View {
                         MakerWorldLinks.openInSystemBrowser(MakerWorldLinks.browseURL)
                     }
                 }
+                // P5-003/P5-005: MyMiniFactory is a real in-app
+                // integration (documented public API, not browser
+                // delegation) — see MyMiniFactoryClient.swift's doc
+                // comment.
+                Button("MyMiniFactory…") { showingMyMiniFactory = true }
                 // P3-005 support-paint controls: toggle paint mode,
                 // brush type, brush radius. Click/drag in the viewport
                 // while active paints the real engine's TriangleSelector
@@ -158,6 +164,9 @@ struct ContentView: View {
         }
         .sheet(isPresented: $showingPlatePreview) {
             PlatePreviewView(document: document)
+        }
+        .sheet(isPresented: $showingMyMiniFactory) {
+            MyMiniFactoryView(document: document)
         }
         .alert("Error", isPresented: Binding(
             get: { document.lastError != nil },

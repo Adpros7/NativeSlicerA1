@@ -1,0 +1,50 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>CFBundleExecutable</key>
+	<string>NativeSlicerA1</string>
+	<key>CFBundleIdentifier</key>
+	<string>com.nativeslicera1.NativeSlicerA1</string>
+	<key>CFBundleName</key>
+	<string>NativeSlicerA1</string>
+	<key>CFBundlePackageType</key>
+	<string>APPL</string>
+	<key>CFBundleShortVersionString</key>
+	<string>1.0</string>
+	<key>CFBundleVersion</key>
+	<string>1</string>
+	<key>LSMinimumSystemVersion</key>
+	<string>14.0</string>
+	<!--
+	P5-003 (MyMiniFactory OAuth): registers this app as the handler for
+	the custom `nativeslicera1://` scheme so ASWebAuthenticationSession's
+	real OAuth redirect (MyMiniFactoryOAuth.redirectURI) can route back to
+	this process. This is embedded into the executable's Mach-O
+	`__TEXT,__info_plist` section by Package.swift's linker flags (the
+	standard technique for giving a bare SwiftPM executable an Info.plist
+	without an Xcode project) so `Bundle.main.infoDictionary` reports it.
+
+	Caveat (shared with MakerWorldAuthPresenter's identical scheme):
+	macOS Launch Services resolves custom URL schemes by scanning
+	registered `.app` bundles' Info.plist at index time, not bare
+	executables' embedded sections. Until P8-006 (macOS app packaging)
+	ships a real `.app` wrapping this executable and that bundle is
+	registered with Launch Services (or it's wrapped manually per
+	SESSION.md's Dock-testing recipe), the OS cannot route the redirect
+	back to this process — the OAuth code path is implemented and unit-
+	tested, but not end-to-end GUI-verifiable until packaging lands.
+	-->
+	<key>CFBundleURLTypes</key>
+	<array>
+		<dict>
+			<key>CFBundleURLName</key>
+			<string>com.nativeslicera1.NativeSlicerA1.oauth</string>
+			<key>CFBundleURLSchemes</key>
+			<array>
+				<string>nativeslicera1</string>
+			</array>
+		</dict>
+	</array>
+</dict>
+</plist>

@@ -206,7 +206,11 @@ let package = Package(
             "\(repoRoot)/vendor/BambuStudio/deps/build/arm64/BambuStudio_deps/usr/local/lib/libnlopt.a",
             "\(repoRoot)/vendor/BambuStudio/deps/build/arm64/BambuStudio_deps/usr/local/lib/libcurl.a",
             "\(repoRoot)/vendor/BambuStudio/deps/build/arm64/BambuStudio_deps/usr/local/lib/libssl.a",
-            "\(repoRoot)/vendor/BambuStudio/deps/build/arm64/BambuStudio_deps/usr/local/lib/libcrypto.a"
+            "\(repoRoot)/vendor/BambuStudio/deps/build/arm64/BambuStudio_deps/usr/local/lib/libcrypto.a",
+            "-Xlinker", "-sectcreate",
+            "-Xlinker", "__TEXT",
+            "-Xlinker", "__info_plist",
+            "-Xlinker", "\(repoRoot)/Resources/Info.plist"
         ])
             ]
         ),

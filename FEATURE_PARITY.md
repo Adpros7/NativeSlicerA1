@@ -166,12 +166,15 @@ Shared pattern for all of these: load a bundled calibration model (3MF/STL), app
 | Camera streaming | closed-source plugin, proprietary port-6000 protocol | **none** | P2 | reverse-engineered-only per RESEARCH-P0-010.md; 1fps limitation makes this a low-fidelity feature regardless |
 | Local failure detection | closed-source plugin | **none** | P3 | depends on monitoring UI first |
 
-## 16. MakerWorld integration
+## 16. Online model repositories
 
 | Feature | BambuStudio/OrcaSlicer | NativeSlicerA1 | Priority | Gap |
 |---|---|---|---|---|
-| Browsing/downloading/auth | proprietary bind-ticket auth mechanism, closed-source — RESEARCH-P0-009.md | **none** | P2 | **licensing risk identified**: recommend delegating to the system browser for auth rather than reimplementing Bambu's proprietary bind-ticket flow |
+| MakerWorld trusted external-browser handoff | BambuStudio has embedded WebView; Orca opens externally, both depend on proprietary bind-ticket SSO | **partial** — HTTPS/domain whitelist + system-browser handoff only (`MakerWorldLinks.swift`) | P2 | This is not auth or browsing: NativeSlicerA1 cannot know if the user signed in, list results, or receive a selected model. |
+| MakerWorld authentication/browsing/download | proprietary bind-ticket auth mechanism, closed-source — `RESEARCH-P0-009.md:48-83`; BambuStudio's `makerworld_model_open` is embedded-webview-only | **none** | P2 | No public API. Kept blocked rather than treating an opened browser page as implemented functionality. |
+| MyMiniFactory search + authorized download | not an upstream feature | **partial** — real documented API client, Keychain credentials, OAuth code-token exchange, in-app search/file list, and OAuth `download_url` → existing STL/3MF import path (`MyMiniFactory*.swift`) | P2 | Request/response paths are regression-tested. Live calls in this environment received Cloudflare challenges; final OAuth callback requires a real packaged/Launch-Services-registered `.app` (P8-006). |
 
+Repository selection evidence and exact OpenAPI/OAuth contract: `RESEARCH-P5-MODEL-REPOSITORIES.md`.
 ## 17. Error handling & recovery
 
 | Feature | Upstream pattern | NativeSlicerA1 | Priority | Gap |
