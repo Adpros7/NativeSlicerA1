@@ -56,6 +56,11 @@ final class ProjectDocument: ObservableObject {
     /// without re-collecting it from `objects`/`meshes`.
     private var lastSlicedPlacement: [(mesh: LoadedMesh, transform: simd_float4x4)] = []
     private var lastSlicedHadModifiers = false
+    /// The real G-code file `slice()` last wrote, in a temp directory —
+    /// backs the "Export G-code…" action (copies it to a user-chosen
+    /// destination) and the Device workflow's "Upload to Printer" action
+    /// (FTPS-uploads it directly). `nil` until the first successful slice.
+    @Published private(set) var lastGCodePath: String?
 
     /// Paints a spherical brush stroke at `localPoint` (the target
     /// object's own local mesh coordinates, e.g. from
@@ -456,6 +461,32 @@ final class ProjectDocument: ObservableObject {
         }
     }
 
+    /// UI convenience over `autoArrangeActivePlate` using the real A1
+    /// bed dimensions (`A1BuildVolume`) and a 2mm clearance, surfacing
+    /// any failure through `lastError` instead of requiring every
+    /// caller to catch it — the toolbar's "Arrange" button.
+    func arrangeActivePlate() async {
+        do {
+            try await autoArrangeActivePlate(
+                bedWidth: Double(A1BuildVolume.width), bedHeight: Double(A1BuildVolume.depth), clearance: 2)
+        } catch {
+            lastError = "Arrange failed: \(error)"
+        }
+    }
+
+    /// Copies the last real slice's G-code (`lastGCodePath`) to
+    /// `destination` — the toolbar's "Export G-code…" action. Throws if
+    /// nothing has been sliced yet or the copy fails.
+    func exportGCode(to destination: URL) throws {
+        guard let lastGCodePath else {
+            throw SlicingEngineError.sliceFailed("Nothing has been sliced yet")
+        }
+        if FileManager.default.fileExists(atPath: destination.path) {
+            try FileManager.default.removeItem(at: destination)
+        }
+        try FileManager.default.copyItem(atPath: lastGCodePath, toPath: destination.path)
+    }
+
     /// Saves the scene as a 3MF project file via the real engine's
     /// `store_3mf`, including resolved profile config (P3-003) and
     /// TriangleSelector-backed support paint (P3-005), so both profile
@@ -537,9 +568,25 @@ final class ProjectDocument: ObservableObject {
 
     /// Slices every placed object with `profileSelection`'s resolved A1
     /// profile (P3-003) and uploads the real resulting toolpath for
-    /// viewport preview (P1-009). Runs the (potentially slow) real engine
-    /// pipeline off the main actor so the UI stays responsive; `isSlicing`
-    /// drives a progress indicator.
+    /// viewport preview (P1-009).
+    ///
+    /// Phase 6.5 finding (real, reproduced against the production
+    /// binary, not just XCTest): the previous implementation ran this
+    /// on a background thread (`Task.detached`, then a `DispatchQueue
+    /// .global` retry) to keep the UI responsive, but the vendored
+    /// engine's TBB-parallelized slicing pipeline (`libtbb.a`) never
+    /// returned when first entered from any thread other than the
+    /// process's main thread — confirmed by launching the real built
+    /// app with `NSA1_SLICE_PROBE=1` and observing it hang indefinitely
+    /// under both attempted fixes. Running synchronously on `MainActor`,
+    /// exactly like `calibrate()` already does successfully below, is
+    /// the only pattern actually observed to complete. This freezes the
+    /// UI for the slice's duration (the same accepted tradeoff
+    /// `calibrate()` already has) instead of hanging forever. Deeper
+    /// root cause (TBB/Boost static init expecting main-thread
+    /// first-touch is the leading candidate) remains open — flagged in
+    /// TODO.md — but correctness (a slice that actually completes) took
+    /// priority over an unverified async path.
     func slice() {
         guard !objects.isEmpty, !isSlicing else { return }
         isSlicing = true
@@ -562,40 +609,32 @@ final class ProjectDocument: ObservableObject {
         }
         let selection = profileSelection
         let outputPath = FileManager.default.temporaryDirectory.appendingPathComponent("\(UUID().uuidString).gcode").path
-        Task.detached { [weak self] in
-            do {
-                let loader = try BambuProfileLoader()
-                let segments: [ToolpathSegment]
-                if modifierVolumes.isEmpty {
-                    segments = try SlicingJob.slice(
-                        objects: placed, loader: loader, selection: selection, outputPath: outputPath,
-                        paintData: paintData, layerHeightRanges: layerHeightRanges)
-                } else {
-                    // P4-013: modifier meshes aren't yet threaded through
-                    // SlicingJob.slice's paint/layer-height-range
-                    // convenience wrapper — call the engine directly with
-                    // the same resolved config it would have used.
-                    let configEntries = try SlicingJob.resolvedConfigEntries(loader: loader, selection: selection)
-                    segments = try SlicingEngine.sliceToGCodeWithModifiers(
-                        objects: placed, modifiers: modifierVolumes,
-                        configEntries: configEntries, outputPath: outputPath)
-                }
-                await MainActor.run { [weak self] in
-                    guard let self else { return }
-                    self.toolpath = segments
-                    self.optimizationReport = OptimizationReport.analyze(toolpath: segments)
-                    self.lastSlicedPlacement = placed
-                    self.lastSlicedHadModifiers = !modifierVolumes.isEmpty
-                    self.isSlicing = false
-                }
-            } catch {
-                await MainActor.run { [weak self] in
-                    guard let self else { return }
-                    self.lastError = "Slice failed: \(error)"
-                    self.isSlicing = false
-                }
+        do {
+            let loader = try BambuProfileLoader()
+            let segments: [ToolpathSegment]
+            if modifierVolumes.isEmpty {
+                segments = try SlicingJob.slice(
+                    objects: placed, loader: loader, selection: selection, outputPath: outputPath,
+                    paintData: paintData, layerHeightRanges: layerHeightRanges)
+            } else {
+                // P4-013: modifier meshes aren't yet threaded through
+                // SlicingJob.slice's paint/layer-height-range
+                // convenience wrapper — call the engine directly with
+                // the same resolved config it would have used.
+                let configEntries = try SlicingJob.resolvedConfigEntries(loader: loader, selection: selection)
+                segments = try SlicingEngine.sliceToGCodeWithModifiers(
+                    objects: placed, modifiers: modifierVolumes,
+                    configEntries: configEntries, outputPath: outputPath)
             }
+            toolpath = segments
+            optimizationReport = OptimizationReport.analyze(toolpath: segments)
+            lastSlicedPlacement = placed
+            lastSlicedHadModifiers = !modifierVolumes.isEmpty
+            lastGCodePath = outputPath
+        } catch {
+            lastError = "Slice failed: \(error)"
         }
+        isSlicing = false
     }
 
     /// P6-003/P6-005: runs two additional real engine calls (a purge-
@@ -603,7 +642,10 @@ final class ProjectDocument: ObservableObject {
     /// validation) against the exact placement `slice()` last used, and
     /// merges their real output into `optimizationReport`. Explicit,
     /// on-demand only — `slice()` never calls this automatically, since
-    /// it would silently double the cost of every ordinary slice.
+    /// it would double the cost of every ordinary slice. Runs
+    /// synchronously on `MainActor` — see `slice()`'s doc comment for
+    /// the real background-thread hang this avoids (confirmed in the
+    /// production binary, not just tests).
     func refreshOptimizationDetails() async {
         guard let report = optimizationReport, !lastSlicedPlacement.isEmpty, !isRefreshingOptimizationDetails else { return }
         guard !lastSlicedHadModifiers else {
@@ -613,30 +655,21 @@ final class ProjectDocument: ObservableObject {
         isRefreshingOptimizationDetails = true
         let placed = lastSlicedPlacement
         let selection = profileSelection
-        await Task.detached { [weak self] in
-            do {
-                let loader = try BambuProfileLoader()
-                let configEntries = try SlicingJob.resolvedConfigEntries(loader: loader, selection: selection)
-                let outputPath = FileManager.default.temporaryDirectory.appendingPathComponent("\(UUID().uuidString).gcode").path
-                let statsResult = try SlicingEngine.sliceToGCodeWithStatistics(
-                    objects: placed, configEntries: configEntries, outputPath: outputPath)
-                let collision = try SlicingEngine.validateSequentialCollision(objects: placed, configEntries: configEntries)
-                await MainActor.run { [weak self] in
-                    guard let self else { return }
-                    self.optimizationReport = report.withPurgeAndCollision(
-                        purgeVolumeMM3: OptimizationReport.purgeVolumeMM3(statsResult.statistics.flushVolumesMM3),
-                        collision: collision
-                    )
-                    self.isRefreshingOptimizationDetails = false
-                }
-            } catch {
-                await MainActor.run { [weak self] in
-                    guard let self else { return }
-                    self.lastError = "Optimization details failed: \(error)"
-                    self.isRefreshingOptimizationDetails = false
-                }
-            }
-        }.value
+        do {
+            let loader = try BambuProfileLoader()
+            let configEntries = try SlicingJob.resolvedConfigEntries(loader: loader, selection: selection)
+            let outputPath = FileManager.default.temporaryDirectory.appendingPathComponent("\(UUID().uuidString).gcode").path
+            let statsResult = try SlicingEngine.sliceToGCodeWithStatistics(
+                objects: placed, configEntries: configEntries, outputPath: outputPath)
+            let collision = try SlicingEngine.validateSequentialCollision(objects: placed, configEntries: configEntries)
+            optimizationReport = report.withPurgeAndCollision(
+                purgeVolumeMM3: OptimizationReport.purgeVolumeMM3(statsResult.statistics.flushVolumesMM3),
+                collision: collision
+            )
+        } catch {
+            lastError = "Optimization details failed: \(error)"
+        }
+        isRefreshingOptimizationDetails = false
     }
 
     /// Runs a flow-rate calibration slice (pass 1: 0.80→1.20, 0.05 step)

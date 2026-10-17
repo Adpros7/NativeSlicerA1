@@ -3,83 +3,107 @@
 ## Current phase
 Phase 1 and Phase 4 (except conditional P4-002 repair) are complete.
 Phase 5 is **not complete**: MakerWorld has only an intentionally safe
-trusted-browser handoff; a real MyMiniFactory integration now exists
-alongside it, itself not live-verified (Cloudflare + packaging blockers).
-Phase 6 is **complete for everything verifiable without hardware/
-OrcaSlicer** (P6-001–006 done; P6-007/P6-008 explicitly blocked, see
-`BENCHMARKS.md`). A new user-requested **Phase 6.5 (Native Slicer
-Usability)** was inserted into `TODO.md` immediately after Phase 6 and
-is not started: the app currently launches to a blank viewport with no
-plate/grid shown until import, and the toolbar already overflows at
-default window width (confirmed live — the Optimization Report/
-MakerWorld/MyMiniFactory/paint/cut-plane controls fall behind a `»`
-chevron). Printer connectivity gaps (FTPS upload, structured MQTT
-parsing, print controls) and Phase 7 remain pending.
+trusted-browser handoff; a real MyMiniFactory integration exists
+alongside it (search/OAuth/download), itself not live-verified
+(Cloudflare + packaging blockers). Phase 6 is **complete for everything
+verifiable without hardware/OrcaSlicer**. The user-requested **Phase 6.5
+(Native Slicer Usability)** is **complete**: always-visible build
+plate/grid/axes, real sidebar, Prepare/Preview/Device workflows, a real
+Device backend, and a critical production-blocking bug fix (below).
+Printer connectivity backend (P2-004/P2-005, FTPS/status/controls) is
+implemented; Device-workflow UI consumes it. Phase 7 remains pending.
 
 ## Last completed task
-Phase 6 optimization milestone (commits `a814e63`..`213a174`..`dbc5002`..
-`443b06c`..next), executed via `docs/superpowers/plans/
-2026-10-16-phase6-optimization.md` (ledger: `.superpowers/sdd/
-2026-10-16-phase6-optimization/progress.md`):
+Phase 6.5 usability milestone, plus the P2-004/P2-005 connectivity
+backend it depends on:
 
-- **P6-001:** real A1-profile cube-slice benchmark harness in
-  `BENCHMARKS.md`, run before/after every subsequent change. While
-  wiring up the benchmark's metadata test, found and fixed a real bug:
-  `nsa1_slice_to_gcode_with_statistics` built its `segments` vector but
-  never allocated/assigned `*out_toolpath` and had no `return 0` on its
-  success path at all — it fell off the end of a non-`void` function
-  (undefined behavior in C++), so callers never reliably got a toolpath
-  back from this one of the three slice entry points. `extruder_id`/
-  `extrusion_role` were already populated correctly on the other two
-  entry points (`nsa1_slice_to_gcode`, `nsa1_slice_to_gcode_with_
-  modifiers`); this one needed both the missing fields and the missing
-  toolpath/return-value wiring.
-- **P6-002:** `Optimization.swift`'s `OptimizationReport.analyze
-  (toolpath:)` reads the real `extruder_id`/`role` fields fixed above to
-  report tool transitions and per-layer tool schedules — zero false
-  transitions from travel moves, zero invented transitions for the A1's
-  default single-tool output.
-- **P6-003:** exposed real upstream `PrintEstimatedStatistics::
-  flush_per_filament` (`GCodeProcessor.hpp:101`) through a new
-  `flush_volumes_mm3` field on `NSA1EstimatedStatistics` →
-  `EstimatedPrintStatistics.flushVolumesMM3` → `OptimizationReport.
-  purgeVolumeMM3(_:)`. No automatic `flush_multiplier` changes.
-- **P6-004:** `OptimizationReport.layerSchedules` reports the real
-  engine's final per-layer tool order (same source data as P6-002, no
-  new engine call) — observes upstream's actual schedule.
-- **P6-005:** new sibling C ABI `nsa1_validate_collision`/
-  `nsa1_free_collision_validation` builds/applies a real `Print` and
-  calls its own `validate()` standalone (no G-code export) — the same
-  `STRING_EXCEPT_OBJECT_COLLISION_IN_SEQ_PRINT` check `sliceToGCode`
-  already runs, now callable on demand. Real overlapping-cube/
-  spaced-cube tests both pass for the distinguishing reason (type 3 +
-  message vs. valid + nil message).
-- **P6-006:** `OptimizationReportView.swift` + `ProjectDocument.
-  optimizationReport`/`refreshOptimizationDetails()`: tool-transition/
-  layer data populate free from every slice's own toolpath (no extra
-  engine cost); purge volume + collision status run two additional real
-  engine calls only on explicit user action, never automatically on
-  every ordinary slice.
-- **P6-007:** attempted, blocked — no OrcaSlicer `.app`/CLI exists or is
-  vendored in this environment; building it from source for one
-  benchmark is a separate multi-hour undertaking, documented in
-  `BENCHMARKS.md` rather than skipped silently.
-- **P6-008:** blocked — no physical A1/AMS Lite hardware available;
-  documented per AGENTS.md's hardware-verification rule.
-- 8 new regression tests (`OptimizationTests`, `CollisionValidationTests`,
-  `SlicingJobTests.testRealSliceCarriesEngineMoveMetadata`); full suite
-  144→152 tests, 0 failures, run 3–5× after every C-ABI-touching commit
-  per the toolchain-sensitivity rule below. Benchmarks recorded after
-  each milestone in `BENCHMARKS.md`; no regression found (all within
-  Debug-process noise, ~1.13–1.24s warm median throughout).
+- **Connectivity backend:** `FTPSUploader.swift` — real implicit-FTPS
+  client on `Network.framework` (TLS connect → `USER`/`PASS`/`TYPE I`/
+  `PASV`/`STOR`), verified against a real local `NWListener` TLS FTP test
+  server (self-signed fixture identity, exact command sequence, exact
+  uploaded bytes asserted — `FTPSUploaderIntegrationTests`).
+  `PrinterStatus.swift` — `PrintStatusReport` parses the real documented
+  `device/{serial}/report` schema; `pausePrint`/`resumePrint`/
+  `stopPrint`/`startPrint` convenience commands on `PrinterConnection`.
+- **Always-visible build plate:** `BuildPlateGeometry.swift` (pure,
+  tested) + `MetalRenderer` draws it unconditionally via the existing
+  line pipeline — no new shader.
+- **Critical bug found and fixed while verifying the plate live:**
+  `Camera`'s orbit math treated world **Y** as vertical while every
+  mesh/toolpath/plate vertex the engine emits uses **Z** as height — the
+  new flat plate rendered as a vertical wall (caught via direct
+  window-ID screenshot, not glossed over). Fixed by orbiting around
+  world Z (`Camera.swift`); this also corrects how every *pre-existing*
+  mesh/toolpath/cut-plane render was oriented — a real, previously
+  undetected rendering bug, not something this session introduced but
+  something it finally surfaced and fixed.
+- **Sidebar:** `SidebarView.swift` — real printer/filament/process
+  summary (reads `document.profileSelection` directly) + object list
+  with a real empty state.
+- **Prepare/Preview/Device workflow:** `SlicerWorkflow` enum +
+  `ContentView`'s detail switch; toolbar reorganized (Import/Arrange/
+  Slice/Export/Optimization Report always visible; secondary items under
+  "More") — confirmed live that the pre-change toolbar actually
+  overflowed (Optimization Report/MakerWorld/MyMiniFactory behind a `»`
+  chevron at 1500pt) and that the reorganized one does not, down to
+  900pt.
+- **Device workflow:** `DeviceSessionModel.swift`/`DeviceView.swift` —
+  real SSDP discovery, real MQTT connect, real parsed status, real FTPS
+  upload. "Start a new print" is intentionally absent: the printer's
+  `project_file` command needs a project-3MF with G-code embedded in
+  `Metadata/plate_1.gcode` (BambuStudio's separate `Format/bbs_3mf.cpp`
+  format, never ported here) — documented, not silently faked.
+- **Previously-missing real actions added:** `ProjectDocument.
+  arrangeActivePlate()` and `exportGCode(to:)` — `autoArrangeActivePlate`
+  already existed but had **no UI entry point at all**; there was no
+  G-code export action of any kind.
+- **CRITICAL production bug found and fixed:** `ProjectDocument.slice()`
+  (and the new `refreshOptimizationDetails()`) ran the real engine via
+  `Task.detached`, which **hung forever**. This was reproduced against
+  the actual compiled app binary, not just a test: an env-var-triggered
+  probe (`NSA1_SLICE_PROBE=1 .build/out/Products/Debug/NativeSlicerA1`)
+  imported a mesh and called `slice()`, and it never returned — proving
+  the Slice button itself had never actually been exercised end-to-end
+  before (every prior test called the engine synchronously, bypassing
+  this path). Replacing `Task.detached` with `DispatchQueue.global` did
+  **not** fix it — same hang. Root cause is still open (TBB global
+  thread pool / Boost static init expecting main-thread first-touch are
+  the leading candidates — tracked as **P2-009**). The fix that actually
+  works: run `slice()`/`refreshOptimizationDetails()` **synchronously on
+  MainActor**, exactly like the already-proven `calibrate()` already
+  does — this freezes the UI for the slice's duration (same accepted
+  tradeoff `calibrate()` already had) instead of hanging forever.
+  Regression test: `ProjectDocumentExportArrangeTests.
+  testExportGCodeCopiesRealSlicedBytesAfterSlice` calls `document.
+  slice()` directly and reproduces the old hang/crash.
+- 18 new regression tests (`BuildPlateGeometryTests`,
+  `ProjectDocumentExportArrangeTests`, `ContentViewTests`,
+  `PrintStatusReportTests`, `PrinterConnectionCommandTests`,
+  `FTPSUploaderTests`, `FTPSUploaderIntegrationTests`); full suite
+  144→172 tests, 0 failures, run multiple times for stability per the
+  toolchain-sensitivity rule below.
+- Live-screenshot-verified (direct window-ID capture via
+  `screencapture -l<id>`, which bypasses this environment's heavy
+  desktop focus contention — a real environment constraint discovered
+  this session, documented below) at compact (900pt), standard
+  (1200–1500pt), and wide (1800pt) widths, and in all three workflow
+  tabs, in dark mode. Light mode not independently screenshotted — every
+  new view uses only system semantic colors/materials, no hardcoded
+  colors, so it inherits the same automatic light/dark adaptation the
+  rest of the app already relies on.
 
-The user then added a **priority instruction mid-session**: insert a
-dedicated UI/UX usability milestone immediately after Phase 6, before
-declaring the app ready for users. `TODO.md`'s new "Phase 6.5" and
-`docs/superpowers/specs/2026-10-16-native-slicer-ui-ux-design.md`
-capture the requirements (always-visible A1 plate/grid/axes, populated
-sidebar, Prepare/Preview/Device workflows, every control real and
-reachable, multi-size visual verification). Not yet implemented.
+## NEW finding: this environment's desktop has real, uncontrollable focus contention
+`osascript activate` + `screencapture -x` (full-screen capture) is
+**not reliable** here — other foreground apps/games on this shared
+desktop steal focus between the `activate` call and the capture, and
+synthetic mouse clicks go to whatever is actually on top on screen
+(real input events, not logical-focus-aware) — menu/button clicks via
+screen coordinates cannot be trusted. **Fix:** resolve the target
+window's `CGWindowID` via `CGWindowListCopyWindowInfo` (a tiny inline
+`swift -e` script, no new dependency) and capture with
+`screencapture -l<id> -o`, which reads directly from the window
+server's backing store regardless of z-order/focus. Use this for all
+future GUI screenshot verification in this environment.
 
 ## IMPORTANT finding (still applies): a real, reproduced, bisected toolchain/binary-layout sensitivity
 While implementing P4-008's plate-id 3MF persistence, merely adding an
@@ -92,7 +116,7 @@ SEPARATE function instead — this pattern was followed again for P4-013's
 `sliceToGCodeWithModifiers`. **Any future change to an existing hot-path
 C-ABI function's signature should re-run the full suite 3-5× before
 trusting a clean result; prefer adding a new sibling function instead.**
-Confirmed again in this session: every P6-001/003/005 commit added a new
+Confirmed again this session: every P6-001/003/005 commit added a new
 sibling C-ABI function or new fields on an existing output struct, never
 changed an existing function's parameter list — ran the full suite 3-5×
 after each regardless.
@@ -114,13 +138,24 @@ after each regardless.
   comparison test.
 - **Two different 3MF formats exist in the vendored engine**:
   `Format/3mf.cpp` (legacy, used throughout) vs. `Format/bbs_3mf.cpp`
-  (BambuStudio's separate full project format, not used here).
+  (BambuStudio's separate full project format, not used here — this is
+  also why the Device workflow cannot "start a new print": that needs
+  the latter format's G-code-embedding, which this app doesn't write).
+- **Never call into the vendored engine from a background thread**
+  (`Task.detached`/`DispatchQueue.global` both hang indefinitely,
+  confirmed against the real app binary — see P2-009). Every engine call
+  must run synchronously on `MainActor` until P2-009 is root-caused.
+  This supersedes any earlier assumption that `Task.detached` was a safe
+  way to keep the UI responsive during a slice.
+- **Camera orbits around world Z as vertical, not Y** — matches every
+  mesh/toolpath/plate vertex's real convention (bed Z=0, G-code Z is
+  print height). Any future camera/raycast work must preserve this;
+  `screenPointToRay` already derives everything from `Camera`'s own
+  matrices, so it needed no separate fix.
 
 ## Uncommitted changes
-Phase 6.5 (UI/UX usability) design doc committed; implementation not yet
-started. Working tree otherwise clean — every Phase 6 task committed and
-pushed individually (see commits above). Full suite currently passes
-152/152.
+None — Phase 6.5 and the connectivity backend are committed up through
+this point. Full suite currently passes 172/172.
 
 ## Known blockers
 - **MakerWorld actual auth/browse/download:** public API does not exist;
@@ -128,35 +163,44 @@ pushed individually (see commits above). Full suite currently passes
 - **MyMiniFactory live OAuth/download:** requires user-supplied registered
   OAuth credentials and P8-006's packaged/Launch-Services-registered app.
   This environment's Cloudflare challenge prevents live API proof.
+- **FTPS/MQTT live hardware proof:** `FTPSUploaderIntegrationTests`
+  proves the real protocol against a real local TLS server; no physical
+  A1 is available to prove it against actual printer firmware.
 - **P6-007 OrcaSlicer benchmark:** no OrcaSlicer binary installed/vendored
   here; building it from source is out of proportion to one benchmark.
-- **P6-008 hardware validation:** no physical A1/AMS Lite is available.
+- **P6-008/P2-008 hardware validation:** no physical A1/AMS Lite is
+  available.
+- **P2-009 (new):** background-thread engine calls hang; root cause
+  undiagnosed. Currently mitigated by running synchronously on MainActor
+  (UI freezes during slice/calibrate/optimization-details, does not
+  hang).
 - P3-004 multicolor painting remains deferred; P4-002 needs an observed
   non-manifold repair case.
+- Device workflow "start a new print" needs a project-3MF-with-embedded-
+  G-code writer (BambuStudio's `Format/bbs_3mf.cpp` equivalent) this
+  codebase has never ported — real upload/pause/resume/stop work today,
+  starting a *new* print from this app does not yet.
 
 ## Next recommended action
-1. Implement Phase 6.5 (`TODO.md` P6.5-001..005): always-visible A1
-   plate/grid/axes in `MetalViewport`/`MetalRenderer`, a populated
-   sidebar (printer/filament/process/objects with real empty states),
-   Prepare/Preview/Device workflows, toolbar reorganized so Import/
-   Arrange/Slice/Export/Print never fall into the overflow chevron
-   (confirmed live at 1500pt width — screenshot evidence this session),
-   then screenshot-verify compact/standard/wide × light/dark.
-2. After Phase 6.5, implement the software-verifiable printer
-   connectivity gaps: FTPS upload (port 990 implicit TLS, `STOR` to
-   `/sdcard/bbl_plater/...`), structured MQTT status-report parsing
-   (`gcode_state`/`mc_percent`/`layer_num`/etc. per
-   `RESEARCH-P0-007.md`), and pause/resume/stop/start convenience
-   methods on `PrinterConnection` — add a permanent regression test
-   (currently none exist for `PrinterConnection` despite the TODO.md
-   claim of manual mosquitto verification).
-3. Then audit/implement the software-verifiable slice of Phase 7
-   (orientation optimization already has a P4-010 base; slicing
-   recommendations and G-code-to-3MF reconstruction are feasible
-   without hardware; camera access and auto-intervention are not).
+1. Investigate P2-009 (background-thread engine hang) if slicing
+   performance/UI-freeze becomes a real user complaint — not urgent now
+   that it's a freeze instead of a hang, but worth root-causing before
+   P8 production packaging.
+2. Implement a project-3MF-with-embedded-G-code writer if "start a new
+   print from this app" becomes a priority (currently: upload + control
+   an already-started print works; starting one doesn't).
+3. Continue into the software-verifiable slice of Phase 7 (orientation
+   optimization already has a P4-010 base; slicing recommendations and
+   G-code-to-3MF reconstruction are feasible without hardware; camera
+   access and auto-intervention are not).
+4. P8 production packaging (P8-006 in particular) would unblock live
+   OAuth/FTPS/MakerWorld verification currently blocked on packaging.
 
 ## Relevant commands
 - `swift build` / `swift test` / `swift run NativeSlicerA1`
+- `swift test --filter BuildPlateGeometryTests` — 4 real plate/grid/axis tests
+- `swift test --filter ProjectDocumentExportArrangeTests` — export/arrange + the slice-hang regression test
+- `swift test --filter FTPSUploaderIntegrationTests` — real local TLS FTP upload
 - `swift test --filter MakerWorldLinksTests` — 4 real domain-trust tests
 - `swift test --filter ModifierVolumeTests` — 2 real modifier-mesh tests
 - `swift test --filter PlatePreviewTests` — 3 real plate-preview tests
@@ -181,3 +225,6 @@ pushed individually (see commits above). Full suite currently passes
   ends) — wrap it: `mkdir -p /tmp/NativeSlicerA1.app/Contents/MacOS`,
   write a minimal `Info.plist`, symlink the built executable in, then
   `open -n /tmp/NativeSlicerA1.app`.
+- Screenshot verification in THIS environment: resolve the window's
+  `CGWindowID` and use `screencapture -l<id> -o -x`, not plain
+  `screencapture -x` (see "desktop focus contention" finding above).

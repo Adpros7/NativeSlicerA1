@@ -61,6 +61,11 @@ final class MetalRenderer: NSObject, MTKViewDelegate {
     /// toolpath (just a distinct color), no new pipeline state needed.
     private var cutPlaneBuffer: MTLBuffer?
     private var cutPlaneVertexCount = 0
+    /// Always-visible A1 build plate outline/grid/axes (Phase 6.5
+    /// usability milestone) — built once from `BuildPlateGeometry`, the
+    /// real A1 bed dimensions, never toggled off.
+    private let buildPlateBuffer: MTLBuffer?
+    private let buildPlateVertexCount: Int
 
     var renderObjects: [RenderObject] = []
     var camera = Camera()
@@ -123,6 +128,16 @@ final class MetalRenderer: NSObject, MTKViewDelegate {
         self.pipelineState = pipelineState
         self.toolpathPipelineState = toolpathPipelineState
         self.depthState = depthState
+
+        let plateSegments = BuildPlateGeometry.segments()
+        var plateFloats: [Float] = []
+        plateFloats.reserveCapacity(plateSegments.count * 12)
+        for segment in plateSegments {
+            plateFloats.append(contentsOf: [segment.start.x, segment.start.y, segment.start.z, segment.color.x, segment.color.y, segment.color.z])
+            plateFloats.append(contentsOf: [segment.end.x, segment.end.y, segment.end.z, segment.color.x, segment.color.y, segment.color.z])
+        }
+        buildPlateBuffer = device.makeBuffer(bytes: plateFloats, length: plateFloats.count * MemoryLayout<Float>.stride, options: .storageModeShared)
+        buildPlateVertexCount = plateSegments.count * 2
     }
 
     /// Uploads a real-geometry toolpath (P1-009, `SlicingJob.slice`'s
@@ -213,6 +228,14 @@ final class MetalRenderer: NSObject, MTKViewDelegate {
         let aspect = Float(view.drawableSize.width / max(view.drawableSize.height, 1))
         let viewProjection = camera.projectionMatrix(aspect: aspect) * camera.viewMatrix
 
+        if let buildPlateBuffer, buildPlateVertexCount > 0 {
+            var plateUniforms = ToolpathUniforms(modelViewProjection: viewProjection)
+            encoder.setRenderPipelineState(toolpathPipelineState)
+            encoder.setVertexBuffer(buildPlateBuffer, offset: 0, index: 0)
+            encoder.setVertexBytes(&plateUniforms, length: MemoryLayout<ToolpathUniforms>.stride, index: 1)
+            encoder.drawPrimitives(type: .line, vertexStart: 0, vertexCount: buildPlateVertexCount)
+            encoder.setRenderPipelineState(pipelineState)
+        }
         for object in renderObjects {
             guard let gpuMesh = meshBuffers[object.meshID] else { continue }
             var uniforms = Uniforms(

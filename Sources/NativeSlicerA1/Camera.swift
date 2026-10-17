@@ -4,10 +4,15 @@ import simd
 /// zooms. ~30 lines of arcball-adjacent math, not worth a dependency (see
 /// ARCHITECTURE.md P0-006).
 struct Camera {
-    var target = SIMD3<Float>(0, 0, 0)
+    /// Defaults to the real A1 bed's center (`A1BuildVolume`), not the
+    /// origin corner — so the always-visible build plate (Phase 6.5) is
+    /// centered in view before any object is imported.
+    var target = SIMD3<Float>(A1BuildVolume.width / 2, A1BuildVolume.depth / 2, 0)
     var azimuth: Float = .pi / 4 // radians around Y, measured from +Z
     var elevation: Float = .pi / 6 // radians above the XZ plane
-    var distance: Float = 300 // mm
+    /// 400mm comfortably frames the full 256×256mm A1 plate at the
+    /// default 45° vertical FOV.
+    var distance: Float = 400 // mm
 
     private let minElevation: Float = -.pi / 2 + 0.01
     private let maxElevation: Float = .pi / 2 - 0.01
@@ -21,15 +26,22 @@ struct Camera {
         distance = min(max(distance * factor, 10), 5000)
     }
 
+    /// Orbits with world **Z** as the vertical axis — matching the real
+    /// engine's own convention every mesh/toolpath/plate vertex already
+    /// uses (bed at Z=0, G-code Z is print height; `GCodeProcessor`'s
+    /// `move.position` and `BuildPlateGeometry` both put height on Z,
+    /// not Y). A Y-up `eye`/`up` here would render that real geometry
+    /// sideways (a flat bed appearing as a vertical wall) even though
+    /// the data itself is correct.
     var eye: SIMD3<Float> {
         target + distance * SIMD3(
             cos(elevation) * sin(azimuth),
-            sin(elevation),
-            cos(elevation) * cos(azimuth)
+            cos(elevation) * cos(azimuth),
+            sin(elevation)
         )
     }
 
-    var viewMatrix: simd_float4x4 { lookAt(eye: eye, target: target, up: SIMD3(0, 1, 0)) }
+    var viewMatrix: simd_float4x4 { lookAt(eye: eye, target: target, up: SIMD3(0, 0, 1)) }
 
     func projectionMatrix(aspect: Float) -> simd_float4x4 {
         perspective(fovyRadians: .pi / 4, aspect: aspect, near: 1, far: 10000)

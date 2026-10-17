@@ -188,7 +188,7 @@ Repository selection evidence and exact OpenAPI/OAuth contract: `RESEARCH-P5-MOD
 
 | Feature | Upstream | NativeSlicerA1 | Priority | Gap |
 |---|---|---|---|---|
-| Slicing engine speed | no published benchmarks either upstream | **none** — no instrumentation | P2 | add timing + a 3-model benchmark baseline (feeds Phase 6 anyway) |
+| Slicing engine speed | no published benchmarks either upstream | **partial** — `BENCHMARKS.md` tracks a real A1-profile cube slice's wall time across every Phase 6 change (5 runs/milestone); no multi-model baseline yet | P2 | extend to a 3-model benchmark baseline |
 | Viewport rendering | wxWidgets/OpenGL, no native Metal | **full** architecture (GPU mesh caching, cached-per-mesh buffers) — no FPS/memory instrumentation | P2 | add FPS counter + GPU memory profiling |
 | Large-model/memory handling | no explicit OOM handling either upstream | **partial** — loads entire mesh into RAM, no size warning or OOM handling | P2 | add a triangle-count/file-size warning threshold |
 
@@ -200,9 +200,21 @@ NativeSlicerA1's SwiftUI choice is **structurally ahead** of both upstreams here
 |---|---|---|---|
 | Settings form keyboard navigation | **full** (SwiftUI `Form` controls are keyboard-navigable by default) | — | none |
 | Dynamic Type | **full** (system text styles auto-scale) | — | verify at XXXL sizes, not yet done |
-| VoiceOver (standard controls) | **partial** (buttons/lists accessible by default; `ObjectListView` label format not verified) | P1 | audit + test with VoiceOver enabled |
+| VoiceOver (standard controls) | **partial** (buttons/lists accessible by default; `SidebarView` label format not verified) | P1 | audit + test with VoiceOver enabled |
 | **Metal viewport accessibility** | **none** — no `.accessibilityLabel`, no synthetic per-object children, drag/scroll gestures have no keyboard equivalent | P1 | this is the one real structural gap; everything else is ahead by construction |
 | Color contrast / colorblind-safe | **partial** (semantic SwiftUI colors, not explicitly audited) | P2 | run macOS Accessibility Inspector's Color Blindness Simulator |
+
+## 20. Application shell / usability (Phase 6.5)
+
+Neither upstream is a useful comparison here (BambuStudio/OrcaSlicer are wxWidgets apps with their own established layouts) — this tracks NativeSlicerA1's own shell against the real requirement: every visible control reachable and backed by real functionality, not a cosmetic approximation of either upstream.
+
+| Feature | NativeSlicerA1 | Priority | Gap |
+|---|---|---|---|
+| Always-visible build plate/grid/axes/dimensions | **full** — `BuildPlateGeometry.swift`, rendered unconditionally by `MetalRenderer`; real A1 256×256×256mm constants | — | none |
+| Sidebar printer/filament/process/objects summary | **full** — `SidebarView.swift`, reads `document.profileSelection` directly; real empty state when no objects | — | none |
+| Prepare/Preview/Device workflows | **full** — `SlicerWorkflow`; Device workflow backed by real SSDP discovery/MQTT connect/`PrintStatusReport`/FTPS upload, not a mock | — | "start a new print" is absent — needs a project-3MF-with-embedded-G-code writer this codebase doesn't have (`DeviceView.swift` doc comment) |
+| Reachable primary actions at common widths | **full** — Import/Arrange/Slice always visible; Export/Optimization Report/secondary items degrade to the native toolbar overflow only below ~900pt, verified via live screenshots at 900/1500/1800pt | — | none |
+| Export G-code / Arrange buttons | **full** — `ProjectDocument.exportGCode(to:)`/`arrangeActivePlate()`, previously entirely absent from the UI despite `autoArrangeActivePlate` already existing | — | none |
 
 ## Summary: priority rollup
 
