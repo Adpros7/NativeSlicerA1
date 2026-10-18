@@ -37,13 +37,9 @@ final class ProjectDocumentExportArrangeTests: XCTestCase {
     func testExportGCodeCopiesRealSlicedBytesAfterSlice() async throws {
         let document = ProjectDocument()
         importDirectly(cubeMesh(), into: document)
-        document.slice()
-        while document.isSlicing {
-            try await Task.sleep(nanoseconds: 50_000_000)
-        }
+        await document.slice()
         XCTAssertNil(document.lastError)
         XCTAssertFalse(document.toolpath.isEmpty)
-
         let dest = FileManager.default.temporaryDirectory.appendingPathComponent("\(UUID().uuidString).gcode")
         defer { try? FileManager.default.removeItem(at: dest) }
         try document.exportGCode(to: dest)

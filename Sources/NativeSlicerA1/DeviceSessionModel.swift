@@ -123,6 +123,30 @@ final class DeviceSessionModel: ObservableObject {
         }
     }
 
+    /// P8: the complete slice -> export -> upload -> start-print
+    /// workflow's final step — uploads `localPath` (a real project 3MF
+    /// with embedded G-code, `ProjectDocument.exportProjectThreeMF`) via
+    /// FTPS, then issues the real `project_file` MQTT command
+    /// (`PrinterConnection.startPrint`) to start it on the printer.
+    /// Requires an active connection.
+    func startPrint(projectThreeMFAt localPath: String, useAMS: Bool) async {
+        guard let connectedHost, let connection else {
+            lastDeviceError = "Connect to a printer before starting a print."
+            return
+        }
+        isUploading = true
+        defer { isUploading = false }
+        do {
+            let uploader = FTPSUploader(host: connectedHost, password: accessCode)
+            let fileName = URL(fileURLWithPath: localPath).lastPathComponent
+            lastUploadedRemotePath = try await uploader.upload(fileAt: URL(fileURLWithPath: localPath), remoteFileName: fileName)
+            try connection.startPrint(fileName: fileName, useAMS: useAMS)
+            lastDeviceError = nil
+        } catch {
+            lastDeviceError = "Start print failed: \(error.localizedDescription)"
+        }
+    }
+
     /// P7-001: fetches one real JPEG snapshot from the chamber camera
     /// (port 6000, `CameraStreamClient`). A1 hardware caps this at
     /// 1 fps (RESEARCH-P0-010.md) — a single on-demand fetch, not a

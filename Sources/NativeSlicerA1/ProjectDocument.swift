@@ -487,6 +487,40 @@ final class ProjectDocument: ObservableObject {
         try FileManager.default.copyItem(atPath: lastGCodePath, toPath: destination.path)
     }
 
+    /// P8: writes a real Bambu-compatible PROJECT 3MF (G-code embedded at
+    /// `Metadata/plate_1.gcode`, `SlicingEngine.exportBBSProjectThreeMF`)
+    /// for the active plate's objects — what the Device workflow's real
+    /// "Start a New Print" needs: the printer's `project_file` command
+    /// only accepts this format, never a plain `.gcode` (see
+    /// `DeviceView`'s header comment, which this method resolves).
+    /// Slices synchronously on `MainActor` (see `slice()`'s doc comment
+    /// on the real background-thread hang this avoids). Modifier volumes
+    /// (P4-013) aren't threaded through this export path yet — throws a
+    /// clear error rather than silently dropping them.
+    func exportProjectThreeMF(to destination: URL) throws {
+        let plateObjects = objectsOnActivePlate
+        guard !plateObjects.isEmpty else {
+            throw SlicingEngineError.sliceFailed("Nothing to export — the active plate is empty")
+        }
+        guard !plateObjects.contains(where: { !$0.modifiers.isEmpty }) else {
+            throw SlicingEngineError.sliceFailed("Modifier-mesh objects aren't supported by project export yet")
+        }
+        var placed: [(mesh: LoadedMesh, transform: simd_float4x4)] = []
+        var paintData: [[UInt8]] = []
+        var layerHeightRanges: [[LayerHeightRange]] = []
+        for object in plateObjects {
+            guard let mesh = meshes[object.sourceMeshID] else { continue }
+            placed.append((mesh, object.transform.matrix))
+            paintData.append(paintStates[object.id]?.serialize() ?? [])
+            layerHeightRanges.append(object.layerHeightRanges)
+        }
+        let loader = try BambuProfileLoader()
+        let configEntries = try SlicingJob.resolvedConfigEntries(loader: loader, selection: profileSelection)
+        try SlicingEngine.exportBBSProjectThreeMF(
+            atPath: destination.path, objects: placed, configEntries: configEntries,
+            paintData: paintData, layerHeightRanges: layerHeightRanges)
+    }
+
     /// P7-007: loads an existing `.gcode` file (not sliced by this
     /// document) and reconstructs its real toolpath for Preview, via
     /// `SlicingEngine.loadGCodeToolpath` (the real `GCodeProcessor`, not
@@ -612,24 +646,20 @@ final class ProjectDocument: ObservableObject {
     /// profile (P3-003) and uploads the real resulting toolpath for
     /// viewport preview (P1-009).
     ///
-    /// Phase 6.5 finding (real, reproduced against the production
-    /// binary, not just XCTest): the previous implementation ran this
-    /// on a background thread (`Task.detached`, then a `DispatchQueue
-    /// .global` retry) to keep the UI responsive, but the vendored
-    /// engine's TBB-parallelized slicing pipeline (`libtbb.a`) never
-    /// returned when first entered from any thread other than the
-    /// process's main thread — confirmed by launching the real built
-    /// app with `NSA1_SLICE_PROBE=1` and observing it hang indefinitely
-    /// under both attempted fixes. Running synchronously on `MainActor`,
-    /// exactly like `calibrate()` already does successfully below, is
-    /// the only pattern actually observed to complete. This freezes the
-    /// UI for the slice's duration (the same accepted tradeoff
-    /// `calibrate()` already has) instead of hanging forever. Deeper
-    /// root cause (TBB/Boost static init expecting main-thread
-    /// first-touch is the leading candidate) remains open — flagged in
-    /// TODO.md — but correctness (a slice that actually completes) took
-    /// priority over an unverified async path.
-    func slice() {
+    /// P2-009 (root-caused and fixed this session): the vendored engine
+    /// itself never required the main thread — the real hang/crash was a
+    /// stack overflow in THIS app's own C-ABI marshalling helpers
+    /// (`withNSA1ConfigEntries`/`withNSA1SceneObjects` in
+    /// `SlicingEngineBridge.swift`), which recursed once per array
+    /// element (~435 config entries → ~2,000+ stack frames) — fine on
+    /// the ~8MB main-thread stack, a real SIGBUS on a GCD worker
+    /// thread's much smaller default stack. Reproduced directly via
+    /// `lldb` (not inferred), fixed by rewriting those helpers to use
+    /// manually-owned heap buffers with O(1) stack depth regardless of
+    /// array size. `slice()` now runs the actual engine call on
+    /// `Task.detached`, same as `calibrate()`/`refreshOptimizationDetails()`
+    /// below — the UI no longer freezes for the slice's duration.
+    func slice() async {
         guard !objects.isEmpty, !isSlicing else { return }
         isSlicing = true
         var placed: [(mesh: LoadedMesh, transform: simd_float4x4)] = []
@@ -652,22 +682,23 @@ final class ProjectDocument: ObservableObject {
         let selection = profileSelection
         let outputPath = FileManager.default.temporaryDirectory.appendingPathComponent("\(UUID().uuidString).gcode").path
         do {
-            let loader = try BambuProfileLoader()
-            let segments: [ToolpathSegment]
-            if modifierVolumes.isEmpty {
-                segments = try SlicingJob.slice(
-                    objects: placed, loader: loader, selection: selection, outputPath: outputPath,
-                    paintData: paintData, layerHeightRanges: layerHeightRanges)
-            } else {
-                // P4-013: modifier meshes aren't yet threaded through
-                // SlicingJob.slice's paint/layer-height-range
-                // convenience wrapper — call the engine directly with
-                // the same resolved config it would have used.
-                let configEntries = try SlicingJob.resolvedConfigEntries(loader: loader, selection: selection)
-                segments = try SlicingEngine.sliceToGCodeWithModifiers(
-                    objects: placed, modifiers: modifierVolumes,
-                    configEntries: configEntries, outputPath: outputPath)
-            }
+            let segments: [ToolpathSegment] = try await Task.detached(priority: .userInitiated) {
+                let loader = try BambuProfileLoader()
+                if modifierVolumes.isEmpty {
+                    return try SlicingJob.slice(
+                        objects: placed, loader: loader, selection: selection, outputPath: outputPath,
+                        paintData: paintData, layerHeightRanges: layerHeightRanges)
+                } else {
+                    // P4-013: modifier meshes aren't yet threaded through
+                    // SlicingJob.slice's paint/layer-height-range
+                    // convenience wrapper — call the engine directly with
+                    // the same resolved config it would have used.
+                    let configEntries = try SlicingJob.resolvedConfigEntries(loader: loader, selection: selection)
+                    return try SlicingEngine.sliceToGCodeWithModifiers(
+                        objects: placed, modifiers: modifierVolumes,
+                        configEntries: configEntries, outputPath: outputPath)
+                }
+            }.value
             toolpath = segments
             optimizationReport = OptimizationReport.analyze(toolpath: segments)
             lastSlicedPlacement = placed
@@ -684,10 +715,9 @@ final class ProjectDocument: ObservableObject {
     /// validation) against the exact placement `slice()` last used, and
     /// merges their real output into `optimizationReport`. Explicit,
     /// on-demand only — `slice()` never calls this automatically, since
-    /// it would double the cost of every ordinary slice. Runs
-    /// synchronously on `MainActor` — see `slice()`'s doc comment for
-    /// the real background-thread hang this avoids (confirmed in the
-    /// production binary, not just tests).
+    /// it would double the cost of every ordinary slice. Runs the real
+    /// engine calls on `Task.detached` (P2-009 is fixed — see `slice()`'s
+    /// doc comment; this no longer needs to stay on `MainActor`).
     func refreshOptimizationDetails() async {
         guard let report = optimizationReport, !lastSlicedPlacement.isEmpty, !isRefreshingOptimizationDetails else { return }
         guard !lastSlicedHadModifiers else {
@@ -698,16 +728,16 @@ final class ProjectDocument: ObservableObject {
         let placed = lastSlicedPlacement
         let selection = profileSelection
         do {
-            let loader = try BambuProfileLoader()
-            let configEntries = try SlicingJob.resolvedConfigEntries(loader: loader, selection: selection)
             let outputPath = FileManager.default.temporaryDirectory.appendingPathComponent("\(UUID().uuidString).gcode").path
-            let statsResult = try SlicingEngine.sliceToGCodeWithStatistics(
-                objects: placed, configEntries: configEntries, outputPath: outputPath)
-            let collision = try SlicingEngine.validateSequentialCollision(objects: placed, configEntries: configEntries)
-            optimizationReport = report.withPurgeAndCollision(
-                purgeVolumeMM3: OptimizationReport.purgeVolumeMM3(statsResult.statistics.flushVolumesMM3),
-                collision: collision
-            )
+            let (purgeVolumeMM3, collision) = try await Task.detached(priority: .userInitiated) {
+                let loader = try BambuProfileLoader()
+                let configEntries = try SlicingJob.resolvedConfigEntries(loader: loader, selection: selection)
+                let statsResult = try SlicingEngine.sliceToGCodeWithStatistics(
+                    objects: placed, configEntries: configEntries, outputPath: outputPath)
+                let collision = try SlicingEngine.validateSequentialCollision(objects: placed, configEntries: configEntries)
+                return (OptimizationReport.purgeVolumeMM3(statsResult.statistics.flushVolumesMM3), collision)
+            }.value
+            optimizationReport = report.withPurgeAndCollision(purgeVolumeMM3: purgeVolumeMM3, collision: collision)
         } catch {
             lastError = "Optimization details failed: \(error)"
         }
@@ -716,7 +746,8 @@ final class ProjectDocument: ObservableObject {
 
     /// Runs a flow-rate calibration slice (pass 1: 0.80→1.20, 0.05 step)
     /// through the real engine without replacing scene geometry or taking a
-    /// printer action.
+    /// printer action. Real engine call runs on `Task.detached` (P2-009
+    /// is fixed — see `slice()`'s doc comment).
     func calibrate() async {
         guard !isSlicing else { return }
         isSlicing = true
@@ -728,22 +759,24 @@ final class ProjectDocument: ObservableObject {
             guard let resourceURL else {
                 throw SlicingEngineError.sliceFailed("Calibration resource not found")
             }
-            let loader = try BambuProfileLoader()
-            let request = CalibrationRequest(
-                workflow: .flowRate,
-                start: 0.8,
-                end: 1.2,
-                step: 0.05,
-                selection: selection
-            )
-            try CalibrationJob.validate(request, loader: loader, capabilities: .all)
-            let configEntries = try SlicingJob.resolvedConfigEntries(loader: loader, selection: selection)
-            let generation = try SlicingEngine.generateCalibrationGCode(
-                request: request,
-                resourceURL: resourceURL,
-                configEntries: configEntries,
-                outputPath: outputPath
-            )
+            let generation = try await Task.detached(priority: .userInitiated) {
+                let loader = try BambuProfileLoader()
+                let request = CalibrationRequest(
+                    workflow: .flowRate,
+                    start: 0.8,
+                    end: 1.2,
+                    step: 0.05,
+                    selection: selection
+                )
+                try CalibrationJob.validate(request, loader: loader, capabilities: .all)
+                let configEntries = try SlicingJob.resolvedConfigEntries(loader: loader, selection: selection)
+                return try SlicingEngine.generateCalibrationGCode(
+                    request: request,
+                    resourceURL: resourceURL,
+                    configEntries: configEntries,
+                    outputPath: outputPath
+                )
+            }.value
             toolpath = generation.toolpath
             lastCalibration = generation
             lastError = nil

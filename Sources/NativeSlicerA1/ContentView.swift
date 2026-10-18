@@ -54,7 +54,7 @@ struct ContentView: View {
                 Button("Import…", action: importModel)
                 Button("Arrange") { Task { await document.arrangeActivePlate() } }
                     .disabled(document.objectsOnActivePlate.isEmpty)
-                Button(document.isSlicing ? "Slicing…" : "Slice", action: document.slice)
+                Button(document.isSlicing ? "Slicing…" : "Slice") { Task { await document.slice() } }
                     .disabled(document.objects.isEmpty || document.isSlicing)
                 Button("Export G-code…", action: exportGCode)
                     .disabled(document.lastGCodePath == nil)

@@ -539,6 +539,28 @@ int nsa1_load_gcode_toolpath(
     NSA1Toolpath **out_toolpath,
     char **out_error);
 
+/// P8: writes a real Bambu-compatible PROJECT 3MF — the same
+/// `Slic3r::store_bbs_3mf` format (`Format/bbs_3mf.cpp`, vendored but
+/// never called from this bridge before this function) BambuStudio's
+/// own "send to printer" flow writes (`Plater.cpp::prepare_send_gcode`,
+/// `SaveStrategy::Silence | SkipModel | WithGcode | SkipAuxiliary`) —
+/// embeds the real sliced G-code at `Metadata/plate_1.gcode` plus real
+/// per-filament usage/weight/time metadata (`PlateData::
+/// parse_filament_info`), not a hand-rolled approximation. This is
+/// what a real A1 printer's `project_file` MQTT command needs: the
+/// plain `.gcode` this app already produces via `nsa1_slice_to_gcode`
+/// cannot be started that way. Slices `objects`/`config_entries` itself
+/// (same `Print::apply`/`validate`/`process`/`export_gcode` pipeline as
+/// `nsa1_slice_to_gcode`) rather than reusing an already-sliced file, so
+/// the embedded G-code and its metadata always come from one consistent
+/// engine run. Returns 0 on success, -1 on failure (`*out_error` owned,
+/// free with `nsa1_free_string`).
+int nsa1_export_bbs_3mf(
+    const NSA1SceneObject *objects, size_t object_count,
+    const NSA1ConfigEntry *config_entries, size_t config_entry_count,
+    const char *out_3mf_path,
+    char **out_error);
+
 #ifdef __cplusplus
 }
 #endif

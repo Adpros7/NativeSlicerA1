@@ -24,6 +24,8 @@
 #include "libslic3r/Geometry/ConvexHull.hpp"
 #include "libslic3r/TriangleSelector.hpp"
 #include "libslic3r/GCode/GCodeProcessor.hpp"
+#include "libslic3r/Utils.hpp"
+#include "libslic3r/Format/bbs_3mf.hpp"
 #include <cstring>
 #include <array>
 #include <filesystem>
@@ -1939,6 +1941,118 @@ extern "C" int nsa1_load_gcode_toolpath(
         return 0;
     } catch (const std::exception &e) {
         *out_error = copy_c_string(e.what());
+        return -1;
+    }
+}
+
+// P8: real Bambu-compatible PROJECT 3MF writer. Mirrors BambuStudio's own
+// "send to printer" export (`Plater.cpp::prepare_send_gcode` ->
+// `Plater::export_3mf(path, Silence|SkipModel|WithGcode|SkipAuxiliary)`)
+// but builds the required `PlateDataPtrs`/`StoreParams` directly — that
+// GUI path goes through `PartPlateList::store_to_3mf_structure`, a
+// `slic3r/GUI` class this headless bridge never links. `PlateData` itself
+// (declared in `libslic3r/Format/bbs_3mf.hpp`) has no GUI dependency, so
+// populating it by hand here is a faithful port, not a reimplementation:
+// every field it sets is read back by `store_bbs_3mf`'s own exporter
+// (`_BBS_3MF_Exporter::save_model_to_file`), the exact function upstream
+// calls too.
+extern "C" int nsa1_export_bbs_3mf(
+    const NSA1SceneObject *objects, size_t object_count,
+    const NSA1ConfigEntry *config_entries, size_t config_entry_count,
+    const char *out_3mf_path,
+    char **out_error) {
+    *out_error = nullptr;
+    try {
+        if (object_count == 0) {
+            *out_error = copy_c_string("no objects to export");
+            return -1;
+        }
+        // `store_bbs_3mf`'s project/print-config staging (`_temp_1.config`
+        // etc. in `_add_print_config_file_to_archive`/
+        // `_add_project_config_file_to_archive`) writes through
+        // `Model::get_backup_path()`, which falls back to
+        // `temporary_dir() + "/bamboo_model/…"` the first time it's
+        // empty. `temporary_dir()` is a libslic3r-global (`Utils.cpp`'s
+        // `g_temporary_dir`) BambuStudio's own GUI sets once at startup
+        // (`GUI_App::on_init_inner`) — this headless bridge never has,
+        // so it defaulted to "" and tried to create directories under
+        // the filesystem root ("/bamboo_model/…", read-only). Idempotent
+        // or not: setting it to the real OS temp dir before first use is
+        // the actual fix, not a workaround — every other bridge function
+        // never happened to call `get_backup_path()` at all.
+        Slic3r::set_temporary_dir(std::filesystem::temp_directory_path().string());
+        Slic3r::Model model = build_model_from_objects(objects, object_count);
+        Slic3r::DynamicPrintConfig config = build_full_config(config_entries, config_entry_count);
+
+        Slic3r::Print print;
+        print.apply(model, config);
+        Slic3r::StringObjectException err = print.validate();
+        if (!err.string.empty()) {
+            *out_error = copy_c_string(err.string);
+            return -1;
+        }
+        print.process();
+        Slic3r::GCodeProcessorResult result;
+        // Temporary on-disk G-code `store_bbs_3mf` reads from and embeds
+        // at `Metadata/plate_1.gcode` — it copies bytes from this path
+        // into the archive, it does not keep the path itself.
+        const std::string gcode_tmp_path = std::string(out_3mf_path) + ".tmp.gcode";
+        print.export_gcode(gcode_tmp_path.c_str(), &result);
+
+        auto plate = std::make_unique<Slic3r::PlateData>();
+        plate->plate_index = 0;
+        for (size_t i = 0; i < object_count; ++i) {
+            plate->objects_and_instances.emplace_back(static_cast<int>(i), 0);
+        }
+        plate->config.apply(config);
+        plate->gcode_file = gcode_tmp_path;
+        plate->is_sliced_valid = true;
+        plate->gcode_prediction = std::to_string(static_cast<int>(
+            result.print_statistics.modes[static_cast<size_t>(Slic3r::PrintEstimatedStatistics::ETimeMode::Normal)].time));
+        const Slic3r::PrintStatistics &ps = print.print_statistics();
+        if (ps.total_weight != 0.0) {
+            char buf[32];
+            std::snprintf(buf, sizeof(buf), "%.2f", ps.total_weight);
+            plate->gcode_weight = buf;
+        }
+        plate->is_support_used = print.is_support_used();
+        plate->support_material_on_wipe_tower = result.support_material_on_wipe_tower;
+        // Real per-filament used_g/used_m/load-unload-time, derived from
+        // this exact slice's own GCodeProcessorResult — not approximated.
+        plate->parse_filament_info(&result);
+        for (size_t i = 0; i < config_entry_count; ++i) {
+            // "model_id" is vendor-profile metadata (e.g. A1's "N2S"),
+            // not a real engine ConfigOption — build_full_config already
+            // silently drops it, so it's only readable from the raw
+            // entries here, same as upstream's `Preset::get_printer_type`
+            // resolves it from the vendor bundle instead of print config.
+            if (std::string(config_entries[i].key) == "model_id") {
+                plate->printer_model_id = config_entries[i].value;
+            }
+        }
+        if (const auto *nozzle = dynamic_cast<const Slic3r::ConfigOptionFloatsNullable *>(config.option("nozzle_diameter"))) {
+            plate->nozzle_diameters = nozzle->serialize();
+        }
+
+        Slic3r::PlateDataPtrs plate_data_list{plate.get()};
+        Slic3r::StoreParams store_params;
+        store_params.path = out_3mf_path;
+        store_params.model = &model;
+        store_params.plate_data_list = plate_data_list;
+        store_params.config = &config;
+        store_params.strategy = Slic3r::SaveStrategy::Silence | Slic3r::SaveStrategy::SkipModel |
+            Slic3r::SaveStrategy::WithGcode | Slic3r::SaveStrategy::SkipAuxiliary | Slic3r::SaveStrategy::Zip64;
+
+        const bool ok = Slic3r::store_bbs_3mf(store_params);
+        std::filesystem::remove(gcode_tmp_path);
+        if (!ok) {
+            *out_error = copy_c_string("store_bbs_3mf failed to write the project file");
+            return -1;
+        }
+        return 0;
+    } catch (const std::exception &e) {
+        *out_error = copy_c_string(e.what());
+        std::filesystem::remove(std::string(out_3mf_path) + ".tmp.gcode");
         return -1;
     }
 }

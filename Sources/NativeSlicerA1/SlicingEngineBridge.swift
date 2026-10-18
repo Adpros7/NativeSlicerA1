@@ -217,62 +217,121 @@ private struct PendingSceneObject {
     var cutGroupID: UInt64 = 0
 }
 
-/// Recursively pins each object's vertex/index/matrix/paint/layer-height-range
-/// arrays with nested `withUnsafeBufferPointer` scopes so the flat
-/// `NSA1SceneObject` array handed to `body` stays valid for the whole call —
-/// the C function never outlives this stack frame, so no manual lifetime
-/// management is needed. An empty `paintData` yields a NULL `paint_data`
-/// pointer (unpainted object); an empty `layerHeightRanges` yields a NULL
-/// `layer_height_ranges` pointer (uniform layer height, P4-014).
-private func withNSA1SceneObjects<R>(_ pending: [PendingSceneObject], _ body: (UnsafePointer<NSA1SceneObject>?, Int) -> R) -> R {
-    func build(_ index: Int, _ acc: inout [NSA1SceneObject]) -> R {
-        guard index < pending.count else {
-            return acc.withUnsafeBufferPointer { body($0.baseAddress, acc.count) }
-        }
-        let object = pending[index]
-        return object.vertices.withUnsafeBufferPointer { vbuf in
-            object.indices.withUnsafeBufferPointer { ibuf in
-                object.matrix16.withUnsafeBufferPointer { mbuf in
-                    object.paintData.withUnsafeBufferPointer { pbuf in
-                        object.layerHeightRanges.withUnsafeBufferPointer { lbuf in
-                            acc.append(NSA1SceneObject(
-                                vertices: vbuf.baseAddress, vertex_count: vbuf.count / 3,
-                                indices: ibuf.baseAddress, index_count: ibuf.count,
-                                matrix16: mbuf.baseAddress,
-                                paint_data: pbuf.baseAddress, paint_data_size: pbuf.count,
-                                layer_height_ranges: lbuf.baseAddress, layer_height_range_count: lbuf.count,
-                                cut_group_id: object.cutGroupID
-                            ))
-                            return build(index + 1, &acc)
-                        }
-                    }
-                }
-            }
-        }
+/// P2-009 ROOT CAUSE (found and fixed this session): copies `array`'s
+/// bytes into a freshly heap-allocated, manually-owned buffer (nil for
+/// an empty array, matching every `NSA1*` struct's "NULL = absent"
+/// convention). Used instead of `withUnsafeBufferPointer`'s
+/// closure-scoped pointer so marshalling a whole array of C structs
+/// needs O(1) stack depth total, not O(1) PER ELEMENT — the previous
+/// implementation nested one nested closure nested inside `build(index
+/// + 1, …)`'s continuation per element, so flattening the ~435-entry
+/// full engine `DynamicPrintConfig` into `NSA1ConfigEntry`s alone added
+/// ~2,000+ stack frames. That fits in the ~8MB main-thread stack but
+/// overflows a GCD worker thread's much smaller default stack
+/// (`Task.detached`/`DispatchQueue.global()`), causing a real SIGBUS —
+/// reproduced directly via `lldb`, not inferred (`ThreadHangExperimentTests`,
+/// since deleted after confirming this fix). This is a real, exploitable
+/// crash on ANY input large enough to overflow whatever thread calls
+/// it, not merely a background-thread inconvenience. Caller must
+/// `deallocate()` the result exactly once (not `deinitialize` first —
+/// `T` here is always a POD/trivial type: `Float`/`UInt32`/`Double`/
+/// `UInt8`/`NSA1LayerHeightRange`).
+private func copyBuffer<T>(_ array: [T]) -> UnsafeMutablePointer<T>? {
+    guard !array.isEmpty else { return nil }
+    let buf = UnsafeMutablePointer<T>.allocate(capacity: array.count)
+    array.withUnsafeBufferPointer { src in
+        buf.initialize(from: src.baseAddress!, count: src.count)
     }
-    var acc: [NSA1SceneObject] = []
-    acc.reserveCapacity(pending.count)
-    return build(0, &acc)
+    return buf
 }
 
-/// Pins each config entry's key/value C strings for the call, mirroring
-/// `withNSA1SceneObjects`'s lifetime pattern.
-private func withNSA1ConfigEntries<R>(_ pending: [(key: String, value: String)], _ body: (UnsafePointer<NSA1ConfigEntry>?, Int) -> R) -> R {
-    func build(_ index: Int, _ acc: inout [NSA1ConfigEntry]) -> R {
-        guard index < pending.count else {
-            return acc.withUnsafeBufferPointer { body($0.baseAddress, acc.count) }
-        }
-        let entry = pending[index]
-        return entry.key.withCString { kptr in
-            entry.value.withCString { vptr in
-                acc.append(NSA1ConfigEntry(key: kptr, value: vptr))
-                return build(index + 1, &acc)
-            }
-        }
+/// Same manual-allocation fix as `copyBuffer`, for a null-terminated C
+/// string. Caller must `deallocate()` the result exactly once.
+private func makeCString(_ s: String) -> UnsafeMutablePointer<CChar> {
+    let utf8 = s.utf8CString
+    let buf = UnsafeMutablePointer<CChar>.allocate(capacity: utf8.count)
+    utf8.withUnsafeBufferPointer { src in
+        buf.initialize(from: src.baseAddress!, count: src.count)
     }
-    var acc: [NSA1ConfigEntry] = []
-    acc.reserveCapacity(pending.count)
-    return build(0, &acc)
+    return buf
+}
+
+/// Allocates one owned C string per key/value pair and returns both the
+/// resulting `NSA1ConfigEntry` array and the raw pointers backing it,
+/// for callers (`withNSA1ModifierVolumes`) that need these entries to
+/// outlive this function's own return. Caller must deallocate every
+/// pointer in `owned` exactly once.
+private func allocateNSA1ConfigEntries(_ pending: [(key: String, value: String)]) -> (entries: [NSA1ConfigEntry], owned: [UnsafeMutablePointer<CChar>]) {
+    var owned: [UnsafeMutablePointer<CChar>] = []
+    owned.reserveCapacity(pending.count * 2)
+    var entries: [NSA1ConfigEntry] = []
+    entries.reserveCapacity(pending.count)
+    for entry in pending {
+        let k = makeCString(entry.key)
+        let v = makeCString(entry.value)
+        owned.append(k)
+        owned.append(v)
+        entries.append(NSA1ConfigEntry(key: k, value: v))
+    }
+    return (entries, owned)
+}
+
+/// Copies each object's vertex/index/matrix/paint/layer-height-range
+/// arrays into manually-owned buffers (see `copyBuffer`'s P2-009 doc
+/// comment), builds the flat `NSA1SceneObject` array with a plain loop
+/// (O(1) stack depth regardless of object count), then frees every
+/// buffer after `body` returns. An empty `paintData` yields a NULL
+/// `paint_data` pointer (unpainted object); an empty `layerHeightRanges`
+/// yields a NULL `layer_height_ranges` pointer (uniform layer height,
+/// P4-014) — same as before this rewrite.
+private func withNSA1SceneObjects<R>(_ pending: [PendingSceneObject], _ body: (UnsafePointer<NSA1SceneObject>?, Int) -> R) -> R {
+    guard !pending.isEmpty else { return body(nil, 0) }
+    var vertexBufs: [UnsafeMutablePointer<Float>?] = []
+    var indexBufs: [UnsafeMutablePointer<UInt32>?] = []
+    var matrixBufs: [UnsafeMutablePointer<Double>?] = []
+    var paintBufs: [UnsafeMutablePointer<UInt8>?] = []
+    var layerBufs: [UnsafeMutablePointer<NSA1LayerHeightRange>?] = []
+    defer {
+        vertexBufs.forEach { $0?.deallocate() }
+        indexBufs.forEach { $0?.deallocate() }
+        matrixBufs.forEach { $0?.deallocate() }
+        paintBufs.forEach { $0?.deallocate() }
+        layerBufs.forEach { $0?.deallocate() }
+    }
+    var entries: [NSA1SceneObject] = []
+    entries.reserveCapacity(pending.count)
+    for object in pending {
+        let vbuf = copyBuffer(object.vertices)
+        let ibuf = copyBuffer(object.indices)
+        let mbuf = copyBuffer(object.matrix16)
+        let pbuf = copyBuffer(object.paintData)
+        let lbuf = copyBuffer(object.layerHeightRanges)
+        vertexBufs.append(vbuf)
+        indexBufs.append(ibuf)
+        matrixBufs.append(mbuf)
+        paintBufs.append(pbuf)
+        layerBufs.append(lbuf)
+        entries.append(NSA1SceneObject(
+            vertices: vbuf, vertex_count: object.vertices.count / 3,
+            indices: ibuf, index_count: object.indices.count,
+            matrix16: mbuf,
+            paint_data: pbuf, paint_data_size: object.paintData.count,
+            layer_height_ranges: lbuf, layer_height_range_count: object.layerHeightRanges.count,
+            cut_group_id: object.cutGroupID
+        ))
+    }
+    return entries.withUnsafeBufferPointer { body($0.baseAddress, entries.count) }
+}
+
+/// Builds the flat `NSA1ConfigEntry` array via `allocateNSA1ConfigEntries`
+/// and frees its owned C strings after `body` returns (same lifetime
+/// `withCString` gave, without the per-element recursion — see
+/// `copyBuffer`'s P2-009 doc comment).
+private func withNSA1ConfigEntries<R>(_ pending: [(key: String, value: String)], _ body: (UnsafePointer<NSA1ConfigEntry>?, Int) -> R) -> R {
+    guard !pending.isEmpty else { return body(nil, 0) }
+    let (entries, owned) = allocateNSA1ConfigEntries(pending)
+    defer { owned.forEach { $0.deallocate() } }
+    return entries.withUnsafeBufferPointer { body($0.baseAddress, entries.count) }
 }
 
 /// P4-013: one local per-volume config override region, in the same
@@ -296,36 +355,47 @@ private struct PendingModifierVolume {
     let configEntries: [(key: String, value: String)]
 }
 
-/// Pins each modifier's mesh/matrix/config-entry buffers for the call,
-/// mirroring `withNSA1SceneObjects`'s recursive lifetime pattern — each
-/// modifier additionally needs its own nested `withNSA1ConfigEntries`
-/// scope since every modifier carries its own config override list.
+/// Same manual-allocation fix as `withNSA1SceneObjects`, for modifier
+/// volumes — each modifier's own config entries are allocated via
+/// `allocateNSA1ConfigEntries` (not the closure-scoped
+/// `withNSA1ConfigEntries`, since these pointers must outlive that
+/// function's own return) and kept alive by retaining the resulting
+/// `[NSA1ConfigEntry]` array in `configEntryArrays` for this whole call.
 private func withNSA1ModifierVolumes<R>(_ pending: [PendingModifierVolume], _ body: (UnsafePointer<NSA1ModifierVolume>?, Int) -> R) -> R {
-    func build(_ index: Int, _ acc: inout [NSA1ModifierVolume]) -> R {
-        guard index < pending.count else {
-            return acc.withUnsafeBufferPointer { body($0.baseAddress, acc.count) }
-        }
-        let mod = pending[index]
-        return mod.vertices.withUnsafeBufferPointer { vbuf in
-            mod.indices.withUnsafeBufferPointer { ibuf in
-                mod.matrix16.withUnsafeBufferPointer { mbuf in
-                    withNSA1ConfigEntries(mod.configEntries) { cfgPtr, cfgCount in
-                        acc.append(NSA1ModifierVolume(
-                            object_index: mod.objectIndex,
-                            vertices: vbuf.baseAddress, vertex_count: vbuf.count / 3,
-                            indices: ibuf.baseAddress, index_count: ibuf.count,
-                            matrix16: mbuf.baseAddress,
-                            config_entries: cfgPtr, config_entry_count: cfgCount
-                        ))
-                        return build(index + 1, &acc)
-                    }
-                }
-            }
-        }
+    guard !pending.isEmpty else { return body(nil, 0) }
+    var vertexBufs: [UnsafeMutablePointer<Float>?] = []
+    var indexBufs: [UnsafeMutablePointer<UInt32>?] = []
+    var matrixBufs: [UnsafeMutablePointer<Double>?] = []
+    var configEntryArrays: [[NSA1ConfigEntry]] = []
+    var ownedStrings: [UnsafeMutablePointer<CChar>] = []
+    defer {
+        vertexBufs.forEach { $0?.deallocate() }
+        indexBufs.forEach { $0?.deallocate() }
+        matrixBufs.forEach { $0?.deallocate() }
+        ownedStrings.forEach { $0.deallocate() }
     }
-    var acc: [NSA1ModifierVolume] = []
-    acc.reserveCapacity(pending.count)
-    return build(0, &acc)
+    var entries: [NSA1ModifierVolume] = []
+    entries.reserveCapacity(pending.count)
+    for mod in pending {
+        let vbuf = copyBuffer(mod.vertices)
+        let ibuf = copyBuffer(mod.indices)
+        let mbuf = copyBuffer(mod.matrix16)
+        vertexBufs.append(vbuf)
+        indexBufs.append(ibuf)
+        matrixBufs.append(mbuf)
+        let (cfgEntries, owned) = allocateNSA1ConfigEntries(mod.configEntries)
+        ownedStrings.append(contentsOf: owned)
+        configEntryArrays.append(cfgEntries) // retained for the whole call — see doc comment
+        let cfgPtr = cfgEntries.isEmpty ? nil : configEntryArrays[configEntryArrays.count - 1].withUnsafeBufferPointer { $0.baseAddress }
+        entries.append(NSA1ModifierVolume(
+            object_index: mod.objectIndex,
+            vertices: vbuf, vertex_count: mod.vertices.count / 3,
+            indices: ibuf, index_count: mod.indices.count,
+            matrix16: mbuf,
+            config_entries: cfgPtr, config_entry_count: cfgEntries.count
+        ))
+    }
+    return entries.withUnsafeBufferPointer { body($0.baseAddress, entries.count) }
 }
 
 /// Mirrors upstream's `nsa1_cut_model` numeric `cut_mode` convention
@@ -449,7 +519,19 @@ enum SlicingEngine {
             mesh.indices.withUnsafeBufferPointer { ibuf in
                 nsa1_auto_orient(
                     vbuf.baseAddress,
-                    Int(vbuf.count),
+                    // BUG FOUND THIS SESSION (not introduced by it):
+                    // `nsa1_auto_orient`'s `vertex_count` is the real
+                    // vertex count (it reads `vertices[i*3+0..2]` for
+                    // `i in 0..<vertex_count`, CSlic3rBridge.cpp) — this
+                    // passed the FLAT array length (3x too large: XYZ
+                    // per vertex), a genuine out-of-bounds heap read of
+                    // up to 3x the buffer's real size. Reproduced as a
+                    // real SIGSEGV inside qhull (`qh_normalize2`, via
+                    // `Orient.cpp`'s convex-hull preprocessing) on a
+                    // large mesh while investigating P2-009 — small test
+                    // cubes happened not to crash, which is why this had
+                    // gone undetected.
+                    Int(vbuf.count) / 3,
                     ibuf.baseAddress,
                     Int(ibuf.count),
                     &matrix
@@ -480,17 +562,33 @@ enum SlicingEngine {
         guard !meshes.isEmpty else { return [] }
 
         var sceneObjects: [NSA1SceneObject] = []
+        var vertexPointers: [UnsafeMutablePointer<Float>] = []
+        var indexPointers: [UnsafeMutablePointer<UInt32>] = []
         var matrixPointers: [UnsafeMutablePointer<Double>] = []
-        defer { for p in matrixPointers { p.deallocate() } }
+        defer {
+            for p in vertexPointers { p.deallocate() }
+            for p in indexPointers { p.deallocate() }
+            for p in matrixPointers { p.deallocate() }
+        }
         for meshData in meshes {
             let mbuf = flatten(meshData.matrix)
             let matrixPtr = UnsafeMutablePointer<Double>.allocate(capacity: 16)
             matrixPtr.initialize(from: mbuf, count: 16)
             matrixPointers.append(matrixPtr)
+            // `copyBuffer` (not `UnsafePointer(meshData.vertices)`, a
+            // dangling temporary valid only for this call expression's
+            // own duration — the struct it was stored into is used
+            // later, well past that window; same unsafe-temporary-
+            // pointer class of bug the P2-009 marshalling rewrite above
+            // fixed, found while investigating it, fixed the same way).
+            let vbuf = copyBuffer(meshData.vertices)
+            let ibuf = copyBuffer(meshData.indices)
+            if let vbuf { vertexPointers.append(vbuf) }
+            if let ibuf { indexPointers.append(ibuf) }
             sceneObjects.append(NSA1SceneObject(
-                vertices: UnsafePointer(meshData.vertices),
+                vertices: vbuf,
                 vertex_count: meshData.vertices.count / 3,
-                indices: UnsafePointer(meshData.indices),
+                indices: ibuf,
                 index_count: meshData.indices.count,
                 matrix16: UnsafePointer(matrixPtr),
                 paint_data: nil, paint_data_size: 0,
@@ -702,6 +800,51 @@ enum SlicingEngine {
             throw SlicingEngineError.sliceFailed(errorMessage ?? "unknown engine error")
         }
         return toolpath
+    }
+
+    /// P8: writes a real Bambu-compatible PROJECT 3MF (`nsa1_export_bbs_3mf`
+    /// — the vendored `Format/bbs_3mf.cpp` writer, the same one
+    /// BambuStudio's own "send to printer" flow uses) with the real sliced
+    /// G-code embedded at `Metadata/plate_1.gcode`. This is what the A1's
+    /// `project_file` MQTT command needs — a plain `.gcode` upload cannot
+    /// be started that way. Slices `objects`/`configEntries` itself, same
+    /// as `sliceToGCode` — `paintData`/`layerHeightRanges` flow through
+    /// the same `NSA1SceneObject`/`build_model_from_objects` path
+    /// `sliceToGCode` uses, so support paint (P3-005) and variable layer
+    /// height (P4-014) are honored here too, not silently dropped.
+    static func exportBBSProjectThreeMF(
+        atPath path: String,
+        objects: [(mesh: LoadedMesh, transform: simd_float4x4)],
+        configEntries: [(key: String, value: String)],
+        paintData: [[UInt8]] = [],
+        layerHeightRanges: [[LayerHeightRange]] = []
+    ) throws {
+        let pendingObjects = objects.enumerated().map { index, object in
+            PendingSceneObject(
+                vertices: object.mesh.vertices, indices: object.mesh.indices,
+                matrix16: flatten(object.transform),
+                paintData: index < paintData.count ? paintData[index] : [],
+                layerHeightRanges: (index < layerHeightRanges.count ? layerHeightRanges[index] : [])
+                    .map { NSA1LayerHeightRange(z_min: $0.zMin, z_max: $0.zMax, layer_height: $0.layerHeight) }
+            )
+        }
+        var errorMessage: String?
+        let result = withNSA1SceneObjects(pendingObjects) { objPtr, objCount in
+            withNSA1ConfigEntries(configEntries) { cfgPtr, cfgCount in
+                path.withCString { outPtr -> Int32 in
+                    var errPtr: UnsafeMutablePointer<CChar>?
+                    let r = nsa1_export_bbs_3mf(objPtr, objCount, cfgPtr, cfgCount, outPtr, &errPtr)
+                    if let errPtr {
+                        errorMessage = String(cString: errPtr)
+                        nsa1_free_string(errPtr)
+                    }
+                    return r
+                }
+            }
+        }
+        guard result == 0 else {
+            throw SlicingEngineError.sliceFailed(errorMessage ?? "unknown engine error")
+        }
     }
 
     /// Same as `sliceToGCode`, with an additional `modifiers` array

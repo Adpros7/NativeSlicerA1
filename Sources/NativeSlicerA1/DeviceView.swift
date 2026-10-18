@@ -1,18 +1,20 @@
 import SwiftUI
 
-/// Phase 6.5 Device workflow: real SSDP discovery, LAN MQTT connect,
-/// parsed status, and FTPS upload — every control here calls a real
-/// `DeviceSessionModel` method, nothing decorative. "Start a new print"
-/// is intentionally absent: the printer's `project_file` command only
-/// accepts a `.3mf` with G-code embedded in `Metadata/plate_1.gcode`
-/// (BambuStudio's separate project-3mf format, `Format/bbs_3mf.cpp`,
-/// not ported here — see ARCHITECTURE.md's "two 3MF formats" note), so
-/// a "start" button would have nothing real to trigger. Upload, status,
-/// and pause/resume/stop (which control whatever the printer is already
-/// running) all work against the already-sliced plain `.gcode`.
+/// Device workflow: real SSDP discovery, LAN MQTT connect, parsed
+/// status, FTPS upload, and starting a new print — every control here
+/// calls a real `DeviceSessionModel`/`ProjectDocument` method, nothing
+/// decorative. "Start a New Print" (P8) exports a real Bambu-compatible
+/// project 3MF with G-code embedded at `Metadata/plate_1.gcode`
+/// (`ProjectDocument.exportProjectThreeMF`, the vendored `Format/
+/// bbs_3mf.cpp` writer BambuStudio's own "send to printer" flow uses —
+/// previously unported, see ARCHITECTURE.md's "two 3MF formats" note),
+/// uploads it, then issues the real `project_file` MQTT command. Pause/
+/// resume/stop/upload-plain-G-code continue to work independently
+/// against whatever the printer is already running.
 struct DeviceView: View {
     @ObservedObject var document: ProjectDocument
     @StateObject private var session = DeviceSessionModel()
+    @State private var useAMS = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
@@ -108,6 +110,23 @@ struct DeviceView: View {
                         }
                     }
                 }
+
+                GroupBox("Start a New Print") {
+                    VStack(alignment: .leading, spacing: 6) {
+                        Toggle("Use AMS Lite", isOn: $useAMS)
+                        Button(session.isUploading ? "Starting…" : "Export, Upload & Start Print") {
+                            startNewPrint()
+                        }
+                        .disabled(document.objectsOnActivePlate.isEmpty || session.isUploading)
+                        if document.objectsOnActivePlate.isEmpty {
+                            Text("Place at least one object on the active plate first.")
+                                .font(.caption).foregroundColor(.secondary)
+                        } else {
+                            Text("Slices the active plate, embeds the G-code into a real project 3MF, uploads it, then starts printing.")
+                                .font(.caption).foregroundColor(.secondary)
+                        }
+                    }
+                }
             }
 
             if let error = session.lastDeviceError {
@@ -118,5 +137,23 @@ struct DeviceView: View {
         }
         .padding()
         .task { session.startDiscovery() }
+    }
+
+    /// Exports the active plate as a real project 3MF to a temp file
+    /// (`ProjectDocument.exportProjectThreeMF`), then hands it to
+    /// `DeviceSessionModel.startPrint(projectThreeMFAt:useAMS:)` for the
+    /// upload + `project_file` MQTT command.
+    private func startNewPrint() {
+        let tempURL = FileManager.default.temporaryDirectory.appendingPathComponent("\(UUID().uuidString).3mf")
+        do {
+            try document.exportProjectThreeMF(to: tempURL)
+        } catch {
+            session.lastDeviceError = "Export failed: \(error.localizedDescription)"
+            return
+        }
+        Task {
+            await session.startPrint(projectThreeMFAt: tempURL.path, useAMS: useAMS)
+            try? FileManager.default.removeItem(at: tempURL)
+        }
     }
 }
