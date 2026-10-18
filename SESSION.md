@@ -12,6 +12,36 @@ fabricated). P8-004 (hardware validation) and P8-008 (publish) remain
 blocked on the same no-physical-printer gate every prior phase already
 documented.
 
+## Last completed task (latest, this session)
+**P5-002/P5-003: Real embedded MakerWorld browsing + downloads.**
+User directive: "bambu studio is opensource, do whatever they are
+doing." Replaced the browser-delegation-only `MakerWorldLinks` with a
+real embedded `WKWebView` (`MakerWorldWebView`), matching BambuStudio's
+own `WebViewPanel`/`WebViewDialog.cpp` approach exactly: same URL
+construction (`SetMakerworldModelID`: `{host}studio/webview?modelid=X
+&from=bambustudio`; `OpenMakerworldSearchPage`: `{host}studio/webview/
+search?from=bambustudio&keyword=X&from_studio_home=true`), same JS
+bridge JSON shape as `GUI_App.cpp::handle_web_request()` (`sequence_id`/
+`command`/`data` over `window.postMessage`). Real file downloads route
+through WKWebView's native `WKDownloadDelegate` — the same mechanism
+Safari uses for a real download link/button — into
+`ProjectDocument.importModel`, the same path every other import already
+uses. `MakerWorldBrowserView` (new file) wires it into a real in-app
+sheet via `ContentView.swift`'s "Browse Models…" menu item (Sign In…
+stays system-browser-delegated — MakerWorld's real bind-ticket SSO is
+still closed-source in both upstreams, unchanged from prior sessions).
+**Verified with a real screenshot**, not simulated: launched the
+packaged app, clicked More → MakerWorld → Browse Models…, and captured
+the live makerworld.com site (real logo, real category chips, a real
+model feed entry, the real cookie-consent banner) rendering inside the
+app's own sheet window. 5 new regression tests
+(`testModelURLMatchesBambuStudioFormat`, `testSearchURLMatchesBambuStudioFormat`,
+`testSearchURLPercentEncodesSpecialCharacters`,
+`testBridgeMessageParsesRealBambuStudioJSONShape`,
+`testBridgeMessageRejectsMalformedJSON`); full suite now 191/191,
+confirmed stable across 2 repeated runs. TODO.md's P5-002/P5-003 moved
+from blocked to done; P5-001 (auth) stays honestly blocked — no
+bind-ticket exchange was reimplemented.
 ## Last completed task (this session)
 
 **Priority 1 — Real Bambu-compatible project-3MF export (slice → export
