@@ -20,6 +20,7 @@ struct ContentView: View {
     @State private var showingPlatePreview = false
     @State private var showingOptimizationReport = false
     @State private var showingMyMiniFactory = false
+    @State private var showingMakerWorldBrowser = false
     @State private var makerWorldAuth = MakerWorldAuthPresenter()
 
     var body: some View {
@@ -182,23 +183,22 @@ struct ContentView: View {
                         .disabled(document.selection == nil)
                     Button("Plates (\(document.plates.count))…") { showingPlatePreview = true }
                     Divider()
-                    // P5-001/P5-002: MakerWorld integration, delegated
-                    // entirely to the system browser — see
-                    // MakerWorldLinks.swift's doc comment for why (the
-                    // real bind-ticket SSO mechanism is closed-source in
-                    // both upstreams). This app never embeds a webview
-                    // or talks to any MakerWorld API; it only ever opens
-                    // the real makerworld.com domain, gated by a real
-                    // trust check.
+                    // P5-001/P5-002: MakerWorld integration — Sign In
+                    // stays delegated to the system browser (the real
+                    // bind-ticket SSO mechanism is closed-source in
+                    // both upstreams; see MakerWorldLinks.swift's doc
+                    // comment), but Browse Models now embeds a real
+                    // WKWebView showing the real makerworld.com site,
+                    // matching Bambu Studio's own embedded-webview
+                    // approach — no more hand-off to an external
+                    // browser for browsing/importing models.
                     Menu("MakerWorld") {
                         Button("Sign In…") {
                             if let window = NSApp.keyWindow ?? NSApp.windows.first {
                                 makerWorldAuth.presentSignIn(anchor: window)
                             }
                         }
-                        Button("Browse Models…") {
-                            MakerWorldLinks.openInSystemBrowser(MakerWorldLinks.browseURL)
-                        }
+                        Button("Browse Models…") { showingMakerWorldBrowser = true }
                     }
                     // P5-003/P5-005: MyMiniFactory is a real in-app
                     // integration (documented public API, not browser
@@ -232,6 +232,9 @@ struct ContentView: View {
         }
         .sheet(isPresented: $showingMyMiniFactory) {
             MyMiniFactoryView(document: document)
+        }
+        .sheet(isPresented: $showingMakerWorldBrowser) {
+            MakerWorldBrowserView(document: document)
         }
         .alert("Error", isPresented: Binding(
             get: { document.lastError != nil },

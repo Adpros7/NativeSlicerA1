@@ -19,6 +19,7 @@ enum FTPSError: Error, LocalizedError {
     case unexpectedReply(expected: [Int], got: String)
     case malformedPassiveReply(String)
     case transferFailed(String)
+    case invalidRemoteFileName(String)
 
     var errorDescription: String? {
         switch self {
@@ -26,6 +27,7 @@ enum FTPSError: Error, LocalizedError {
         case .unexpectedReply(let expected, let got): return "FTPS unexpected reply (expected \(expected)): \(got)"
         case .malformedPassiveReply(let reply): return "FTPS malformed PASV reply: \(reply)"
         case .transferFailed(let reason): return "FTPS transfer failed: \(reason)"
+        case .invalidRemoteFileName(let name): return "FTPS invalid remote file name: \(name)"
         }
     }
 }
@@ -51,8 +53,31 @@ final class FTPSUploader {
     /// `PrinterConnection.startPrint(fileName:)` needs.
     @discardableResult
     func upload(fileAt localURL: URL, remoteFileName: String) async throws -> String {
+        // P8-002 security review: every current caller derives
+        // `remoteFileName` from `URL(fileURLWithPath:).lastPathComponent`
+        // of an internally UUID-generated path (`DeviceSessionModel`),
+        // never raw user input — but `STOR \(remotePath)` builds a
+        // plaintext FTP control-channel command line, so a future
+        // caller passing an attacker-influenced name containing CR/LF
+        // could inject additional FTP commands, and "/" could escape
+        // the fixed `/sdcard/bbl_plater/` directory. Reject both here,
+        // at the one function that actually formats the command, rather
+        // than trusting every future call site to sanitize first.
+        // Checked at the `unicodeScalars` level, not `Character`: Swift
+        // collapses an adjacent CR+LF pair into ONE extended grapheme
+        // cluster (`"\r\n".count == 1`), so comparing `Character`s
+        // against `"\r"`/`"\n"` separately never matches a real CRLF
+        // pair — exactly the injection this guard exists to catch.
+        // Caught by `BackgroundSliceRegressionTests`-style direct
+        // testing (`FTPSUploaderIntegrationTests
+        // .testUploadRejectsInjectionCharactersInRemoteFileName`) before
+        // this reached a real connection attempt.
+        guard !remoteFileName.isEmpty,
+              !remoteFileName.unicodeScalars.contains(where: { $0 == "\r" || $0 == "\n" || $0 == "/" })
+        else {
+            throw FTPSError.invalidRemoteFileName(remoteFileName)
+        }
         let control = try await Self.connectTLS(host: host, port: port)
-        defer { control.cancel() }
 
         try await Self.expectReply(control, codes: [220])
         try await Self.sendLine("USER \(username)", to: control)

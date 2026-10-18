@@ -7,3 +7,4 @@ DerivedData/
 *.xcodeproj/
 vendor/
 .omp/
+dist/

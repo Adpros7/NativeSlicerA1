@@ -1,0 +1,36 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<!--
+	App Sandbox is intentionally NOT enabled: sandboxing is an App Store
+	distribution requirement, not a hardened-runtime/notarization one.
+	This app is direct-distributed (not App Store, P5-001's MakerWorld
+	scope note applies the same reasoning), links many vendored static
+	C++ libraries (libslic3r/OpenCascade/TBB/etc. — ARCHITECTURE.md), and
+	needs broad local filesystem access for arbitrary user-chosen
+	import/export paths; sandboxing would need a much larger
+	security-review pass (security-scoped bookmarks for every file
+	picker, entitlement audit per vendored library) that is out of
+	proportion to this task. Hardened Runtime (codesign's "options
+	runtime" flag) is enabled independently via the packaging script and
+	does NOT require App Sandbox.
+	-->
+
+	<!--
+	P2-002/P2-003/P2-004/P2-005/P7-001: outbound/inbound network to the
+	printer's LAN IP (SSDP discovery, MQTT status, FTPS upload, camera
+	snapshot) and outbound HTTPS (MyMiniFactory API, MakerWorld/OAuth
+	browser handoff).
+	-->
+	<key>com.apple.security.network.client</key>
+	<true/>
+	<!--
+	P2-002: `PrinterDiscovery`'s `NWListener` binds a local UDP port to
+	receive SSDP multicast replies — this is a real inbound listener,
+	not just an outbound client connection.
+	-->
+	<key>com.apple.security.network.server</key>
+	<true/>
+</dict>
+</plist>

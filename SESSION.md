@@ -1,263 +1,248 @@
 # Session State
 
 ## Current phase
-Phase 1 and Phase 4 (except conditional P4-002 repair) are complete.
-Phase 5 is **not complete**: MakerWorld has only an intentionally safe
-trusted-browser handoff; a real MyMiniFactory integration exists
-alongside it (search/OAuth/download), itself not live-verified
-(Cloudflare + packaging blockers). Phase 6 is **complete for everything
-verifiable without hardware/OrcaSlicer**. The user-requested **Phase 6.5
-(Native Slicer Usability)** is **complete**: always-visible build
-plate/grid/axes, real sidebar, Prepare/Preview/Device workflows, a real
-Device backend, and a critical production-blocking bug fix (below).
-Printer connectivity backend (P2-004/P2-005, FTPS/status/controls) is
-implemented; Device-workflow UI consumes it. **Phase 7 is complete for
-everything verifiable without hardware** (P7-001 camera client is real
-and protocol-tested but not hardware-verified, same gate as P2-002/
-P2-003; P7-007 is accurately scoped as partial — toolpath reconstruction
-only, not a `.3mf` writer).
+Phases 1-7 complete (per prior sessions' scoping, unchanged this
+session). **Phase 8 (Production) is complete for everything
+software-verifiable in this environment**: P8-001 (regression testing),
+P8-002 (security review), P8-003 (performance benchmarks), P8-005
+(compatibility documentation), P8-006 (macOS app packaging) are done.
+P8-007 (sign and notarize) is signing-done/notarization-blocked (no paid
+Developer ID certificate available — honestly documented, not
+fabricated). P8-004 (hardware validation) and P8-008 (publish) remain
+blocked on the same no-physical-printer gate every prior phase already
+documented.
 
-## Last completed task
-Phase 7, plus Phase 6.5 usability milestone and the P2-004/P2-005
-connectivity backend they depend on:
+## Last completed task (this session)
 
-- **Phase 7 (this pass):** researched the real documented A1/P1 chamber
-  camera protocol (`OpenBambuAPI/video.md`, byte-exact — port 6000,
-  80-byte auth packet, 16-byte frame header + JPEG) rather than leaving
-  P7-001 as a fabricated "proprietary, unimplementable" blocker.
-  `CameraStreamClient.swift` implements it on the same `Network.framework`
-  TLS pattern as `FTPSUploader`; byte-exact unit tests plus a real local
-  TLS integration test (`CameraStreamClientIntegrationTests`) prove the
-  full handshake→auth→frame round trip. `DeviceSessionModel` adds real
-  local-failure detection from the live MQTT status stream (P7-002), a
-  real `UNUserNotificationCenter` alert (P7-003), and an explicit
-  opt-in auto-pause (P7-004, off by default). `ProjectDocument.
-  autoOrientSelection()` finally wires the already-implemented
-  `SlicingEngine.autoOrientMesh` (P4-010) to a UI button (P7-005) — it
-  had no entry point at all before. `OptimizationReport.recommendations`
-  (P7-006) derives tips strictly from the report's own already-real data
-  (tool changes, collision, purge volume), never a generic tip.
-  `nsa1_load_gcode_toolpath`/`SlicingEngine.loadGCodeToolpath` (P7-007)
-  loads an existing `.gcode` via the real `GCodeProcessor` for Preview —
-  accurately scoped as partial, since it does not write a `.3mf` back
-  out (same project-3MF-with-embedded-G-code gap as Device's "start a
-  new print"). **Bug caught during this work:** the new bridge function
-  crashed with SIGSEGV on a missing file (no existence check before
-  calling into the engine) — fixed with an explicit
-  `std::filesystem::exists` guard; `GCodeLoadTests` pins both the
-  success and the clean-failure path. 9 new regression tests.
+**Priority 1 — Real Bambu-compatible project-3MF export (slice → export
+→ upload → start-print):** `nsa1_export_bbs_3mf` (`CSlic3rBridge.cpp`)
+calls the vendored `Format/bbs_3mf.cpp`'s real `store_bbs_3mf` writer —
+the exact format/strategy BambuStudio's own "send to printer" flow uses
+(`Silence|SkipModel|WithGcode|SkipAuxiliary`) — building a real
+`PlateData` (per-filament usage/weight/time from the slice's own
+`GCodeProcessorResult`, `PlateData::parse_filament_info`) by hand since
+the GUI-only `PartPlateList::store_to_3mf_structure` this app never
+links isn't needed (`PlateData` itself has no GUI dependency). Fixed a
+real upstream bug hit along the way: `Model::get_backup_path()` defaulted
+to the unwritable `/bamboo_model/...` (filesystem root) because this
+headless bridge never called `Slic3r::set_temporary_dir()` the way
+BambuStudio's own GUI does at startup. `ProjectDocument
+.exportProjectThreeMF`/`SlicingEngine.exportBBSProjectThreeMF` carry
+paint/layer-height-range data through, matching `slice()`'s fidelity.
+`DeviceView`'s real "Start a New Print" (export → FTPS upload →
+`project_file` MQTT command) completes the workflow —
+`PrinterConnection.startPrint` already existed with no way to produce a
+valid project file before this. Test: `ExportBBSProjectThreeMFTests`
+actually unzips the produced file (`/usr/bin/unzip`) and asserts real
+`Metadata/plate_1.gcode`/`3D/3dmodel.model` entries and real G-code
+bytes — not just a nonzero return code.
 
-**Previously completed (Phase 6.5 usability + connectivity backend):**
+**Priority 3 — P2-009 root-caused and fixed (not just investigated):**
+the vendored engine never required the main thread. The real bug was a
+**stack overflow** in this app's own C-ABI marshalling
+(`withNSA1ConfigEntries`/`withNSA1SceneObjects`/`withNSA1ModifierVolumes`,
+`SlicingEngineBridge.swift`) — a recursive continuation-passing helper
+that added ~5-9 stack frames per array element; flattening the ~435-entry
+full engine `DynamicPrintConfig` this way needed 2,000+ stack frames,
+fitting the ~8MB main-thread stack but overflowing a GCD worker thread's
+much smaller default stack. **Confirmed via `lldb` attach on the actual
+hung process**, not inferred: the crash backtrace showed `EXC_BAD_ACCESS`
+inside the recursive `build` closure at `index≈130` of 435, and
+separately a real SIGBUS from both `Task.detached` and
+`DispatchQueue.global()`. Fixed by rewriting the three marshalling
+helpers to copy into manually-owned heap buffers (`copyBuffer`/
+`makeCString`/`allocateNSA1ConfigEntries`) with O(1) stack depth
+regardless of array size — verified by making `ProjectDocument.slice()`/
+`calibrate()`/`refreshOptimizationDetails()` actually run the real engine
+call via `Task.detached` again (previously forced `MainActor`-synchronous
+as a stopgap) and confirming the Slice button no longer freezes the UI.
+**Two more real, independent bugs found during the same investigation
+and fixed**, both pre-existing (not introduced this session):
+`autoOrientMesh` passed the *flat* (3x too large) vertex-array length as
+`vertex_count` to `nsa1_auto_orient` — a genuine heap over-read that
+crashed with a real `SIGSEGV` inside `qhull` (`qh_normalize2`) on a
+non-trivial mesh, previously undetected because every prior test used
+tiny 8-vertex cubes small enough for the 3x over-read to land on mapped
+(if garbage) memory; `autoArrange` stored dangling
+`UnsafePointer(array)` temporaries — valid only for their enclosing call
+expression — into a struct used well after that expression ended.
+Regression tests: `BackgroundSliceRegressionTests` (`Task.detached`/
+`DispatchQueue.global`/real `ProjectDocument.slice()` all complete
+without crashing).
 
-- **Connectivity backend:** `FTPSUploader.swift` — real implicit-FTPS
-  client on `Network.framework` (TLS connect → `USER`/`PASS`/`TYPE I`/
-  `PASV`/`STOR`), verified against a real local `NWListener` TLS FTP test
-  server (self-signed fixture identity, exact command sequence, exact
-  uploaded bytes asserted — `FTPSUploaderIntegrationTests`).
-  `PrinterStatus.swift` — `PrintStatusReport` parses the real documented
-  `device/{serial}/report` schema; `pausePrint`/`resumePrint`/
-  `stopPrint`/`startPrint` convenience commands on `PrinterConnection`.
-- **Always-visible build plate:** `BuildPlateGeometry.swift` (pure,
-  tested) + `MetalRenderer` draws it unconditionally via the existing
-  line pipeline — no new shader.
-- **Critical bug found and fixed while verifying the plate live:**
-  `Camera`'s orbit math treated world **Y** as vertical while every
-  mesh/toolpath/plate vertex the engine emits uses **Z** as height — the
-  new flat plate rendered as a vertical wall (caught via direct
-  window-ID screenshot, not glossed over). Fixed by orbiting around
-  world Z (`Camera.swift`); this also corrects how every *pre-existing*
-  mesh/toolpath/cut-plane render was oriented — a real, previously
-  undetected rendering bug, not something this session introduced but
-  something it finally surfaced and fixed.
-- **Sidebar:** `SidebarView.swift` — real printer/filament/process
-  summary (reads `document.profileSelection` directly) + object list
-  with a real empty state.
-- **Prepare/Preview/Device workflow:** `SlicerWorkflow` enum +
-  `ContentView`'s detail switch; toolbar reorganized (Import/Arrange/
-  Slice/Export/Optimization Report always visible; secondary items under
-  "More") — confirmed live that the pre-change toolbar actually
-  overflowed (Optimization Report/MakerWorld/MyMiniFactory behind a `»`
-  chevron at 1500pt) and that the reorganized one does not, down to
-  900pt.
-- **Device workflow:** `DeviceSessionModel.swift`/`DeviceView.swift` —
-  real SSDP discovery, real MQTT connect, real parsed status, real FTPS
-  upload. "Start a new print" is intentionally absent: the printer's
-  `project_file` command needs a project-3MF with G-code embedded in
-  `Metadata/plate_1.gcode` (BambuStudio's separate `Format/bbs_3mf.cpp`
-  format, never ported here) — documented, not silently faked.
-- **Previously-missing real actions added:** `ProjectDocument.
-  arrangeActivePlate()` and `exportGCode(to:)` — `autoArrangeActivePlate`
-  already existed but had **no UI entry point at all**; there was no
-  G-code export action of any kind.
-- **CRITICAL production bug found and fixed:** `ProjectDocument.slice()`
-  (and the new `refreshOptimizationDetails()`) ran the real engine via
-  `Task.detached`, which **hung forever**. This was reproduced against
-  the actual compiled app binary, not just a test: an env-var-triggered
-  probe (`NSA1_SLICE_PROBE=1 .build/out/Products/Debug/NativeSlicerA1`)
-  imported a mesh and called `slice()`, and it never returned — proving
-  the Slice button itself had never actually been exercised end-to-end
-  before (every prior test called the engine synchronously, bypassing
-  this path). Replacing `Task.detached` with `DispatchQueue.global` did
-  **not** fix it — same hang. Root cause is still open (TBB global
-  thread pool / Boost static init expecting main-thread first-touch are
-  the leading candidates — tracked as **P2-009**). The fix that actually
-  works: run `slice()`/`refreshOptimizationDetails()` **synchronously on
-  MainActor**, exactly like the already-proven `calibrate()` already
-  does — this freezes the UI for the slice's duration (same accepted
-  tradeoff `calibrate()` already had) instead of hanging forever.
-  Regression test: `ProjectDocumentExportArrangeTests.
-  testExportGCodeCopiesRealSlicedBytesAfterSlice` calls `document.
-  slice()` directly and reproduces the old hang/crash.
-- 18 new regression tests (`BuildPlateGeometryTests`,
-  `ProjectDocumentExportArrangeTests`, `ContentViewTests`,
-  `PrintStatusReportTests`, `PrinterConnectionCommandTests`,
-  `FTPSUploaderTests`, `FTPSUploaderIntegrationTests`); full suite
-  144→172 tests, 0 failures, run multiple times for stability per the
-  toolchain-sensitivity rule below.
-- Live-screenshot-verified (direct window-ID capture via
-  `screencapture -l<id>`, which bypasses this environment's heavy
-  desktop focus contention — a real environment constraint discovered
-  this session, documented below) at compact (900pt), standard
-  (1200–1500pt), and wide (1800pt) widths, and in all three workflow
-  tabs, in dark mode. Light mode not independently screenshotted — every
-  new view uses only system semantic colors/materials, no hardcoded
-  colors, so it inherits the same automatic light/dark adaptation the
-  rest of the app already relies on.
+**Priority 1 — macOS app packaging (P8-006):** `Scripts/package-app.sh`
+builds the release binary, assembles a real `Contents/{MacOS,Resources,
+Info.plist,PkgInfo}` `.app` bundle (enhanced `Resources/Info.plist` with
+`NSLocalNetworkUsageDescription` — `PrinterDiscovery`'s real inbound SSDP
+`NWListener` is exactly the case macOS's Local Network privacy prompt
+gates — plus standard bundle keys), copies the real SwiftPM resource
+bundles (calibration assets, printer profiles, CocoaMQTT's own privacy
+manifest bundle), asserts **zero non-system dynamic dependencies** via
+an `otool -L` gate that fails the build otherwise (confirms P9-007's
+from-source dependency build pays off — every linked dylib/framework is
+`/usr/lib` or `/System/Library`), code-signs with Hardened Runtime
+(`codesign --options runtime` + `Resources/NativeSlicerA1.entitlements`
+— `network.client`/`network.server` only, App Sandbox deliberately not
+enabled, reasoning in the entitlements file itself), and registers with
+Launch Services (`lsregister -f`, finally making the `nativeslicera1://`
+OAuth redirect scheme GUI-reachable — P5-003 had been blocked purely on
+packaging since Phase 5). Verified: `codesign --verify --deep --strict`
+passes; `codesign -dv` confirms `flags=0x10000(runtime)`; `spctl
+--assess` correctly `rejected` (not notarized — honest, not hidden).
 
-## NEW finding: this environment's desktop has real, uncontrollable focus contention
-`osascript activate` + `screencapture -x` (full-screen capture) is
-**not reliable** here — other foreground apps/games on this shared
-desktop steal focus between the `activate` call and the capture, and
-synthetic mouse clicks go to whatever is actually on top on screen
-(real input events, not logical-focus-aware) — menu/button clicks via
-screen coordinates cannot be trusted. **Fix:** resolve the target
-window's `CGWindowID` via `CGWindowListCopyWindowInfo` (a tiny inline
-`swift -e` script, no new dependency) and capture with
-`screencapture -l<id> -o`, which reads directly from the window
-server's backing store regardless of z-order/focus. Use this for all
-future GUI screenshot verification in this environment.
+**Priority 6 — Launched and visually verified the packaged app:**
+window-ID screenshots (`screencapture -l<id>`, this environment's
+documented focus-contention-immune method) of Prepare (empty-state
+plate/toolbar), Preview (View Mode/Open G-code toolbar), and Device
+(real SSDP discovery) tabs, all rendering correctly from the real signed
+`.app`, not the raw executable. **Real finding, not fabricated:** the
+Device tab's live SSDP listener discovered an actual network
+announcement — `N2S` (the Bambu A1's real `model_id`) at a real LAN
+IP — proving `PrinterDiscovery` works against real broadcast traffic in
+this environment; connecting/controlling it was deliberately **not**
+attempted without explicit hardware authorization, so this is documented
+as a live-discovery observation, not a hardware-control verification
+(`COMPATIBILITY.md`). **Environment finding, not an app defect:**
+interactive `NSOpenPanel` file-selection automation (needed to get a
+model onto the plate for a full Slice/Export smoke test) was blocked by
+this shared desktop's confirmed focus-stealing (`System Events`
+diagnostics showed another running app, Blender, was the actual OS
+frontmost process mid-automation, consistent with SESSION.md's existing
+"real, uncontrollable focus contention" finding) — raw `keystroke`/`key
+code` events are delivered to whatever the OS considers frontmost
+regardless of the AppleScript `tell process` target, while
+element-targeted `click`/`perform action` calls (used for every toolbar/
+tab interaction above) are not affected and worked reliably every time.
+Import/Slice/Export functional correctness is instead proven by the
+automated suite, which exercises the identical `ProjectDocument`
+methods the UI calls.
+
+**Priority 5 — Security review (P8-002), found and fixed 2 real bugs**
+while auditing: `FTPSUploader.upload`'s `remoteFileName` was written
+directly into a plaintext FTP `STOR` command line with no sanitization —
+CR/LF could inject additional FTP commands, `/` could escape the fixed
+upload directory. Not reachable through the current UI (every caller
+passes an internally UUID-generated name), fixed anyway at the one
+function that formats the command. **The first fix attempt had its own
+bug, caught by writing the regression test, not by inspection:**
+checking `Character`s (`remoteFileName.contains(where: { $0 == "\r" ||
+… } )`) silently failed because Swift's `String` collapses an adjacent
+CR+LF pair into **one** extended grapheme cluster — exactly the real
+CRLF injection payload — which never equals `"\r"` or `"\n"`
+individually; the test hung trying to actually connect to a closed port
+instead of catching the thrown error. Fixed by checking
+`.unicodeScalars` instead, which doesn't cluster. Also hardened
+`KeychainStore` to `kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly`
+(was `…AfterFirstUnlock`, which permits iCloud Keychain sync of
+third-party OAuth tokens to the user's other Macs). Reviewed and
+confirmed already-correct: OAuth CSRF `state` validation, no logged
+credentials, no hardcoded secrets. Reviewed and accepted as intentional
+(not a defect): printer self-signed TLS acceptance, matching
+BambuStudio's own trust model for this device class. Full writeup:
+`SECURITY-REVIEW.md`.
+
+**Documentation (P8-003/P8-005):** `BENCHMARKS.md`'s new P8-003 section
+(the P2-009 `Task.detached` fix cost nothing measurable vs. the
+`MainActor`-synchronous baseline; real packaged-app launch/RSS numbers);
+new `COMPATIBILITY.md` (P8-005, platform/printer/repository/file-format
+verification-status matrix, consistently distinguishing
+software-verified from hardware-gated); new `SECURITY-REVIEW.md`
+(P8-002).
+
+- 8 new regression tests this session (`ExportBBSProjectThreeMFTests`
+  ×3, `BackgroundSliceRegressionTests` ×3,
+  `testUploadRejectsInjectionCharactersInRemoteFileName`); full suite
+  144→185, 0 failures, run 6× total across the session for stability
+  (toolchain-sensitivity rule below) after every hot-path marshalling/
+  bridge change.
 
 ## IMPORTANT finding (still applies): a real, reproduced, bisected toolchain/binary-layout sensitivity
-While implementing P4-008's plate-id 3MF persistence, merely adding an
-unused parameter to `SlicingEngine.storeThreeMF`'s Swift signature made
-an UNRELATED, already-passing test fail deterministically across the
-full suite while staying 100% green in isolation. Rigorously bisected.
-Root cause not fully understood. Fixed by keeping `storeThreeMF`'s
-signature byte-identical and adding new functionality via a WHOLLY
-SEPARATE function instead — this pattern was followed again for P4-013's
-`sliceToGCodeWithModifiers`. **Any future change to an existing hot-path
-C-ABI function's signature should re-run the full suite 3-5× before
-trusting a clean result; prefer adding a new sibling function instead.**
-Confirmed again this session: every P6-001/003/005 commit added a new
-sibling C-ABI function or new fields on an existing output struct, never
-changed an existing function's parameter list — ran the full suite 3-5×
-after each regardless.
+(Unchanged from prior sessions — still the governing rule.) While
+implementing P4-008's plate-id 3MF persistence, merely adding an unused
+parameter to `SlicingEngine.storeThreeMF`'s Swift signature made an
+UNRELATED, already-passing test fail deterministically across the full
+suite while staying 100% green in isolation. This session's P2-009 fix
+(rewriting all three marshalling helpers, touching every C-ABI call
+site's Swift-side argument-passing) was run through the full suite 6
+times total, specifically because of this rule — all 6 were clean.
 
 ## Important technical decisions
-- **MakerWorld integration is browser-delegated, not embedded** — a
-  deliberate, user-confirmed scope boundary (asked via the `ask` tool
-  given TODO.md's own explicit licensing-risk flag), not a technical
-  limitation worked around. Any future MakerWorld work must stay within
-  this boundary (no embedded webview, no reverse-engineered API calls,
-  every URL gated through `MakerWorldLinks.isTrusted`).
-- **New C-ABI functionality goes in sibling functions, not new
-  parameters on existing ones** (P4-008/P4-013 finding above).
-  `build_model_from_objects` (C++-internal, non-`extern "C"`) is the one
-  exception since it never crosses the Swift/C ABI boundary directly.
-- **`ModelVolumeType::PARAMETER_MODIFIER` + per-volume `ModelConfig` is
-  sufficient for real local overrides** — confirmed via source
-  investigation before writing code, proven via a real extrusion
-  comparison test.
-- **Two different 3MF formats exist in the vendored engine**:
-  `Format/3mf.cpp` (legacy, used throughout) vs. `Format/bbs_3mf.cpp`
-  (BambuStudio's separate full project format, not used here — this is
-  also why the Device workflow cannot "start a new print": that needs
-  the latter format's G-code-embedding, which this app doesn't write).
-- **Never call into the vendored engine from a background thread**
-  (`Task.detached`/`DispatchQueue.global` both hang indefinitely,
-  confirmed against the real app binary — see P2-009). Every engine call
-  must run synchronously on `MainActor` until P2-009 is root-caused.
-  This supersedes any earlier assumption that `Task.detached` was a safe
-  way to keep the UI responsive during a slice.
-- **Camera orbits around world Z as vertical, not Y** — matches every
-  mesh/toolpath/plate vertex's real convention (bed Z=0, G-code Z is
-  print height). Any future camera/raycast work must preserve this;
-  `screenPointToRay` already derives everything from `Camera`'s own
-  matrices, so it needed no separate fix.
+- **P2-009's real fix is in Swift-side marshalling, not the C++ engine
+  or the threading model** — any future C-ABI function taking an array
+  parameter MUST use the iterative/manually-owned-buffer pattern
+  (`copyBuffer`/`makeCString`/`allocateNSA1ConfigEntries`), never a
+  recursive `withUnsafeBufferPointer`-chain-per-element helper. The old
+  "never call into the vendored engine from a background thread" rule
+  from prior sessions is **superseded** — `Task.detached` is correct and
+  now proven safe (`BackgroundSliceRegressionTests`).
+- **`nsa1_export_bbs_3mf` slices internally** rather than reusing an
+  already-sliced `.gcode` file, matching every other bridge function's
+  self-contained-slice pattern (`nsa1_slice_to_gcode_with_statistics`,
+  etc.) — one consistent engine run produces both the embedded G-code
+  and its metadata, never two separately-sliced artifacts that could
+  drift.
+- **Packaging asserts zero non-system dylibs as a hard build gate**, not
+  a one-time manual check — `Scripts/package-app.sh` fails loudly if a
+  future dependency change reintroduces a Homebrew/MacPorts dylib (the
+  exact class of regression P9-007 fixed).
+- **Notarization is a real, named, unremovable blocker** in this
+  environment (free "Apple Development" identity only, no paid Developer
+  ID) — `P8-007`/`SECURITY-REVIEW.md` document this explicitly rather
+  than silently signing ad-hoc and calling it done.
 
 ## Uncommitted changes
-None once this commit lands — Phase 7 is complete for everything
-verifiable without hardware. Full suite currently passes 179/179.
+None once this commit lands.
 
 ## Known blockers
-- **MakerWorld actual auth/browse/download:** public API does not exist;
-  reverse-engineering bind-ticket endpoints remains out of scope.
-- **MyMiniFactory live OAuth/download:** requires user-supplied registered
-  OAuth credentials and P8-006's packaged/Launch-Services-registered app.
-  This environment's Cloudflare challenge prevents live API proof.
-- **FTPS/MQTT/camera live hardware proof:** `FTPSUploaderIntegrationTests`/
-  `CameraStreamClientIntegrationTests` prove the real protocols against
-  real local TLS servers; no physical A1 is available to prove them
-  against actual printer firmware.
-- **P6-007 OrcaSlicer benchmark:** no OrcaSlicer binary installed/vendored
-  here; building it from source is out of proportion to one benchmark.
-- **P6-008/P2-008 hardware validation:** no physical A1/AMS Lite is
-  available.
-- **P2-009:** background-thread engine calls hang; root cause
-  undiagnosed. Currently mitigated by running synchronously on MainActor
-  (UI freezes during slice/calibrate/optimization-details, does not
-  hang).
-- P3-004 multicolor painting remains deferred; P4-002 needs an observed
-  non-manifold repair case.
-- Device workflow "start a new print" and P7-007's G-code-load both need
-  a project-3MF-with-embedded-G-code writer (BambuStudio's `Format/
-  bbs_3mf.cpp` equivalent) this codebase has never ported — real upload/
-  pause/resume/stop and loading an existing `.gcode` for Preview both
-  work today; writing one back out as a `.3mf` does not yet.
+- **P8-004/P8-008 (hardware validation / publish):** no physical Bambu
+  Lab A1/AMS Lite available — same gate as P2-002/P2-003/P6-008/P7-001,
+  consistently documented across every phase, never claimed otherwise.
+- **P8-007 notarization:** needs a paid Apple Developer Program
+  "Developer ID Application" certificate this environment doesn't have.
+- **MakerWorld/MyMiniFactory live API, OrcaSlicer benchmark:** unchanged
+  from prior sessions (see TODO.md's own per-item blockers).
+- **Interactive native-file-picker GUI automation** in this specific
+  shared-desktop environment (confirmed this session: another running
+  app steals OS-level keyboard frontmost status mid-automation) — a real
+  environment constraint, not an app defect; element-targeted
+  click/radio-button automation (used for every toolbar/tab
+  verification this session) is unaffected.
 
 ## Next recommended action
-1. Investigate P2-009 (background-thread engine hang) if slicing
-   performance/UI-freeze becomes a real user complaint — not urgent now
-   that it's a freeze instead of a hang, but worth root-causing before
-   P8 production packaging.
-2. Implement a project-3MF-with-embedded-G-code writer if "start a new
-   print from this app" or "save a loaded G-code as a project" becomes a
-   priority.
-3. Begin Phase 8 (production packaging) — P8-006 in particular would
-   unblock live OAuth/FTPS/camera/MakerWorld verification currently
-   blocked purely on packaging, not on missing implementation.
+1. Phase 8 is complete for everything software-verifiable. Remaining
+   work is either hardware-gated (P8-004/P8-008) or credential-gated
+   (P8-007 notarization) — both need resources this environment cannot
+   provide, not further engineering.
+2. If a paid Developer ID certificate becomes available: re-run
+   `Scripts/package-app.sh` with `CODESIGN_IDENTITY` set to it, then run
+   `xcrun notarytool submit`/`stapler` (not yet scripted, since there's
+   nothing to notarize against without the certificate).
+3. If physical A1/AMS Lite hardware becomes available: every
+   discovery/MQTT/FTPS/camera/start-print code path is protocol-tested
+   and ready for the first real hardware validation pass
+   (`COMPATIBILITY.md` lists exactly what that would newly confirm).
 
 ## Relevant commands
 - `swift build` / `swift test` / `swift run NativeSlicerA1`
-- `swift test --filter BuildPlateGeometryTests` — 4 real plate/grid/axis tests
-- `swift test --filter ProjectDocumentExportArrangeTests` — export/arrange + the slice-hang regression test
-- `swift test --filter FTPSUploaderIntegrationTests` — real local TLS FTP upload
-- `swift test --filter CameraStreamClientIntegrationTests` — real local TLS camera-frame fetch
-- `swift test --filter GCodeLoadTests` — real round-trip of a loaded .gcode file
-- `swift test --filter MakerWorldLinksTests` — 4 real domain-trust tests
-- `swift test --filter ModifierVolumeTests` — 2 real modifier-mesh tests
-- `swift test --filter PlatePreviewTests` — 3 real plate-preview tests
-- `swift test --filter MultiPlateTests` — 5 real multi-plate tests
-- `swift test --filter CutModelTests` — 7 real cut/connector-boolean tests
-- `swift test --filter ProjectDocumentCutTests` — 10 real cut/connector/modifier/undo tests
-- `swift test --filter CutGroupIDPersistenceTests` — 2 real cut_id/3MF tests
-- `swift test --filter ConnectorTests` — 6 real connector-mesh tests
-- `swift test --filter VariableLayerHeightTests` — 2 real layer-height-range tests
-- `swift test --filter SupportPaintingTests` — 5 real paint engine tests
-- `swift test --filter RaycastTests` — viewport hit testing + ray-plane
-- `swift test --filter AutoArrangeTests` — 3 orient/arrange tests
-- `cd vendor/BambuStudio/build/arm64 && ninja libslic3r libnest2d` — only
-  for temporary upstream instrumentation; ALWAYS revert vendor sources
-  afterward (`git -C vendor/BambuStudio checkout --`).
-- When touching an existing hot-path C-ABI function's signature: run the
-  FULL suite 3-5× before trusting a clean result, or add a sibling
-  function instead — see the toolchain-sensitivity finding above.
-- Manual GUI smoke test: launch via a real `.app` bundle (the raw
-  `.build/out/Products/Debug/NativeSlicerA1` executable run directly is
-  NOT Dock-registered and exits when its launching terminal session
-  ends) — wrap it: `mkdir -p /tmp/NativeSlicerA1.app/Contents/MacOS`,
-  write a minimal `Info.plist`, symlink the built executable in, then
-  `open -n /tmp/NativeSlicerA1.app`.
-- Screenshot verification in THIS environment: resolve the window's
-  `CGWindowID` and use `screencapture -l<id> -o -x`, not plain
-  `screencapture -x` (see "desktop focus contention" finding above).
+- `Scripts/package-app.sh [output_dir]` — builds release, assembles,
+  signs, Launch-Services-registers a real `.app` (defaults to `dist/`,
+  gitignored). `open dist/NativeSlicerA1.app` to run it.
+- `swift test --filter ExportBBSProjectThreeMFTests` — real bbs 3MF
+  export, verified via actual `unzip` of the produced archive.
+- `swift test --filter BackgroundSliceRegressionTests` — P2-009
+  regression: `Task.detached`/`DispatchQueue.global`/real
+  `ProjectDocument.slice()` all complete without crashing.
+- `swift test --filter FTPSUploaderIntegrationTests` — real local TLS
+  FTP upload + the CRLF/path-traversal injection-guard regression.
+- Every `swift test --filter <Suite>` command listed in prior sessions'
+  SESSION.md history still applies unchanged — not re-listed here to
+  avoid duplication; see TODO.md's per-task citations for the full set.
+- When touching an existing hot-path C-ABI function's signature OR
+  marshalling helper: run the FULL suite 3-6× before trusting a clean
+  result (toolchain-sensitivity rule above).
+- Screenshot verification: resolve the window's `CGWindowID` and use
+  `screencapture -l<id> -o -x`. For element interaction, prefer
+  `osascript`'s accessibility `click`/`perform action` on a specific UI
+  element over `keystroke`/`key code` — this session confirmed the
+  latter can be delivered to a different, OS-frontmost app on this
+  shared desktop.

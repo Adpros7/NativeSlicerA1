@@ -10,6 +10,12 @@ import Security
 /// Generic-password items, keyed by `service` (a reverse-DNS-style string
 /// identifying which integration owns the secret) + `account` (which
 /// credential within that integration, e.g. "apiKey"/"accessToken").
+/// `AfterFirstUnlockThisDeviceOnly` (P8-002 security review): readable
+/// as soon as the user unlocks their Mac once after boot (so background/
+/// launch-time reads work), but explicitly excluded from iCloud
+/// Keychain sync — these are third-party API tokens for THIS app on
+/// THIS Mac, not something that should silently propagate to every
+/// other Mac signed into the same iCloud account.
 enum KeychainStore {
     @discardableResult
     static func set(_ value: String, service: String, account: String) -> Bool {
@@ -22,7 +28,7 @@ enum KeychainStore {
         SecItemDelete(query as CFDictionary)
         var attributes = query
         attributes[kSecValueData as String] = data
-        attributes[kSecAttrAccessible as String] = kSecAttrAccessibleAfterFirstUnlock
+        attributes[kSecAttrAccessible as String] = kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly
         return SecItemAdd(attributes as CFDictionary, nil) == errSecSuccess
     }
 

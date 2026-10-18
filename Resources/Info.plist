@@ -8,32 +8,60 @@
 	<string>com.nativeslicera1.NativeSlicerA1</string>
 	<key>CFBundleName</key>
 	<string>NativeSlicerA1</string>
+	<key>CFBundleDisplayName</key>
+	<string>NativeSlicerA1</string>
 	<key>CFBundlePackageType</key>
 	<string>APPL</string>
+	<key>CFBundleInfoDictionaryVersion</key>
+	<string>6.0</string>
 	<key>CFBundleShortVersionString</key>
 	<string>1.0</string>
 	<key>CFBundleVersion</key>
 	<string>1</string>
+	<key>CFBundleDevelopmentRegion</key>
+	<string>en</string>
+	<key>CFBundleSignature</key>
+	<string>????</string>
 	<key>LSMinimumSystemVersion</key>
 	<string>14.0</string>
+	<key>LSApplicationCategoryType</key>
+	<string>public.app-category.productivity</string>
+	<key>NSHumanReadableCopyright</key>
+	<string>AGPLv3. See LICENSE and THIRD_PARTY_LICENSES.md.</string>
+	<key>NSPrincipalClass</key>
+	<string>NSApplication</string>
+	<key>NSHighResolutionCapable</key>
+	<true/>
+	<key>NSSupportsAutomaticGraphicsSwitching</key>
+	<true/>
+	<!--
+	P2-002/P2-003/P2-004/P2-005/P7-001 (SSDP discovery, MQTT, FTPS upload,
+	camera snapshot): all real `Network.framework` connections to the
+	printer's LAN IP (`PrinterDiscovery`'s `NWListener` receives SSDP
+	multicast replies — an inbound local-network listener, the specific
+	case macOS's Local Network privacy prompt gates). Required so macOS
+	actually shows the permission prompt instead of silently failing
+	discovery once this ships as a real `.app` (P8-006) rather than a
+	bare unsandboxed executable.
+	-->
+	<key>NSLocalNetworkUsageDescription</key>
+	<string>NativeSlicerA1 discovers and connects to Bambu Lab A1 printers on your local network to upload files, monitor print status, and fetch chamber camera snapshots.</string>
 	<!--
 	P5-003 (MyMiniFactory OAuth): registers this app as the handler for
 	the custom `nativeslicera1://` scheme so ASWebAuthenticationSession's
 	real OAuth redirect (MyMiniFactoryOAuth.redirectURI) can route back to
-	this process. This is embedded into the executable's Mach-O
+	this process. Also embedded into the executable's Mach-O
 	`__TEXT,__info_plist` section by Package.swift's linker flags (the
-	standard technique for giving a bare SwiftPM executable an Info.plist
-	without an Xcode project) so `Bundle.main.infoDictionary` reports it.
+	standard technique for a bare SwiftPM executable run outside a
+	bundle) so `Bundle.main.infoDictionary` reports it either way.
 
-	Caveat (shared with MakerWorldAuthPresenter's identical scheme):
-	macOS Launch Services resolves custom URL schemes by scanning
-	registered `.app` bundles' Info.plist at index time, not bare
-	executables' embedded sections. Until P8-006 (macOS app packaging)
-	ships a real `.app` wrapping this executable and that bundle is
-	registered with Launch Services (or it's wrapped manually per
-	SESSION.md's Dock-testing recipe), the OS cannot route the redirect
-	back to this process — the OAuth code path is implemented and unit-
-	tested, but not end-to-end GUI-verifiable until packaging lands.
+	`Scripts/package-app.sh` (P8-006) packages a real `.app` from this
+	same plist (as `Contents/Info.plist`) and registers it with Launch
+	Services (`lsregister -f`), so the OS can route the redirect back to
+	this process — this is now GUI-reachable via a packaged build, not
+	only unit-tested. Live OAuth completion still depends on the OS
+	actually completing the browser round trip (P5-005's Cloudflare
+	blocker in this environment), independent of packaging itself.
 	-->
 	<key>CFBundleURLTypes</key>
 	<array>

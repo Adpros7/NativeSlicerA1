@@ -30,6 +30,27 @@ final class FTPSUploaderIntegrationTests: XCTestCase {
         XCTAssertEqual(received, payload)
     }
 
+    /// P8-002: `remoteFileName` is written directly into a plaintext FTP
+    /// `STOR` command line — CR/LF would inject additional commands,
+    /// `/` would escape the fixed upload directory. Proven without a
+    /// real server: the guard must reject before any connection attempt.
+    func testUploadRejectsInjectionCharactersInRemoteFileName() async throws {
+        let payload = Data("test".utf8)
+        let sourceURL = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString + ".gcode")
+        try payload.write(to: sourceURL)
+        defer { try? FileManager.default.removeItem(at: sourceURL) }
+
+        let uploader = FTPSUploader(host: "127.0.0.1", username: "bblp", password: "x", port: 1)
+        for badName in ["plate.gcode\r\nQUIT", "plate\n.gcode", "../etc/passwd", ""] {
+            do {
+                _ = try await uploader.upload(fileAt: sourceURL, remoteFileName: badName)
+                XCTFail("expected invalidRemoteFileName for \(badName.debugDescription)")
+            } catch FTPSError.invalidRemoteFileName {
+                // expected
+            }
+        }
+    }
+
     private static func loadTestIdentity() throws -> SecIdentity {
         let url = URL(fileURLWithPath: "\(#filePath)")
             .deletingLastPathComponent()

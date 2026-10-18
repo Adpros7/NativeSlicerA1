@@ -30,3 +30,27 @@
 ## P6-008 — Hardware validation
 
 **Status: blocked.** No physical Bambu Lab A1 or AMS Lite unit is available in this environment. Per AGENTS.md §11/§19/§20 ("Never claim hardware verification without hardware testing" / "Hardware-dependent work additionally requires physical validation before being labeled hardware-verified"), every Phase 6 change above is verified only via the real vendored `libslic3r` engine running in this process (genuine `Print::apply`/`validate`/`process`/`export_gcode`, not mocked) and the automated test suite — never claimed as hardware-verified. This mirrors the existing P2-002/P2-003 "Not hardware-verified" pattern already used for the printer-connectivity code.
+
+## P8-003 — Production packaging / background-slice performance
+
+**Purpose:** confirm P8-006 packaging and the P2-009 fix (`slice()`/
+`calibrate()`/`refreshOptimizationDetails()` moved from `MainActor`-
+synchronous to `Task.detached`) introduced no regression, plus record
+real packaged-`.app` launch cost.
+
+**Environment:** macOS 27.0.1, arm64, same machine as the P6 table above.
+
+| Measurement | Command | Run 1 | Run 2 | Run 3 | Run 4 | Run 5 | Warm median |
+|---|---|---:|---:|---:|---:|---:|---:|
+| P6-001 cube slice (post P2-009 fix) | `swift test --filter SlicingJobTests/testSlicesCubeIntoRealGCode` | 19.07s (cold) | 1.32s | 1.09s | 1.16s | 1.11s | 1.16s |
+| `nsa1_export_bbs_3mf` real project-3MF export | `swift test --filter ExportBBSProjectThreeMFTests/testExportProjectThreeMFWritesRealEmbeddedGCode` | 1.44s | 1.44s | 1.41s | — | — | 1.44s |
+
+**Interpretation:** 1.16s warm median matches the P6-006 baseline (1.170s) within Debug-process noise — moving the real engine call from `MainActor`-synchronous to `Task.detached` (P2-009) cost nothing measurable; the fix was a marshalling-layer bug, not an engine-call overhead change. The bbs 3MF export (slice + build real `PlateData`/`parse_filament_info` + `store_bbs_3mf` zip write) adds ~0.25-0.3s over a plain `sliceToGCode` call for the same cube — the cost of one extra real zip archive write, not re-slicing (`nsa1_export_bbs_3mf` slices once internally, see its own doc comment).
+
+| Measurement | Value |
+|---|---|
+| Packaged `.app` cold launch → process visible (`open -n -W`, first window not yet confirmed rendered) | 0.164s |
+| Idle RSS (packaged `.app`, Prepare tab, empty scene) | ~55 MB |
+| Full automated suite (185 tests) wall clock | 9.07-10.10s |
+
+**Interpretation:** sub-200ms process start and ~55MB idle footprint are both reasonable for an app statically linking the full `libslic3r`/OpenCascade/OpenCV/TBB/CGAL closure (ARCHITECTURE.md) — the static linking that makes P9-007's "zero non-system dylibs" possible (verified by `Scripts/package-app.sh`'s own `otool -L` gate) doesn't come with a runtime startup-cost penalty here.
