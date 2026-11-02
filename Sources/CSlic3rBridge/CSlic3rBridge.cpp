@@ -70,6 +70,14 @@ extern "C" NSA1Mesh *nsa1_load_stl_mesh(const char *path) {
     return copy_mesh(mesh);
 }
 
+extern "C" NSA1Mesh *nsa1_load_stl_mesh_repaired(const char *path) {
+    Slic3r::TriangleMesh mesh;
+    if (!mesh.ReadSTLFile(path, /*repair=*/true)) {
+        return nullptr;
+    }
+    return copy_mesh(mesh);
+}
+
 extern "C" void nsa1_free_mesh(NSA1Mesh *mesh) {
     if (!mesh) return;
     delete[] mesh->vertices;

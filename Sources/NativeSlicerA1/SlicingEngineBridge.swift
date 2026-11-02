@@ -443,6 +443,25 @@ enum SlicingEngine {
         guard result == 0 else { throw SlicingEngineError.failedToWriteSTL(path: path, message: "unknown error") }
     }
 
+    /// P4-002: explicit, user-triggered, non-destructive mesh repair.
+    /// Round-trips through a real binary STL (`storeSTL` ->
+    /// `nsa1_load_stl_mesh_repaired`) so repair runs through the exact
+    /// same upstream `TriangleMesh::ReadSTLFile(repair: true)` path a
+    /// repaired file import would use — no repair logic reimplemented
+    /// here. `mesh` itself is never mutated; the caller is responsible
+    /// for keeping it as a separate object version (matches
+    /// `performCut`'s precedent in `ProjectDocument`).
+    static func repairMesh(_ mesh: LoadedMesh) throws -> LoadedMesh {
+        let tempPath = FileManager.default.temporaryDirectory
+            .appendingPathComponent("\(UUID().uuidString).stl").path
+        defer { try? FileManager.default.removeItem(atPath: tempPath) }
+        try storeSTL(atPath: tempPath, mesh: mesh)
+        guard let raw = tempPath.withCString({ nsa1_load_stl_mesh_repaired($0) }) else {
+            throw SlicingEngineError.failedToReadSTL(path: tempPath)
+        }
+        return convert(raw)
+    }
+
     /// Loads a binary STL file into a triangle mesh (P1-010).
     static func loadSTLMeshBinary(atPath path: String) throws -> LoadedMesh {
         guard let raw = path.cString(using: .utf8) else {

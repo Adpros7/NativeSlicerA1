@@ -13,6 +13,36 @@ blocked on the same no-physical-printer gate every prior phase already
 documented.
 
 ## Last completed task (latest, this session)
+**P4-002: Implement manual mesh repair — explicit, user-triggered,
+non-destructive.** Reverted an uncommitted stray edit found at session
+start (`removeObject` calling `.removeValue(forKey:)` on a `layerHeightRanges`
+property that doesn't exist on `ProjectDocument` — a compile error, not
+real cleanup; per-object layer-height ranges already live inside
+`SceneObject.layerHeightRanges` and are removed wholesale via
+`objects.removeAll`). Then implemented the TODO.md-scoped P4-002 item:
+new `nsa1_load_stl_mesh_repaired` C bridge function (`CSlic3rBridge.cpp`)
+calls the real upstream `TriangleMesh::ReadSTLFile(repair: true)` ->
+`trianglemesh_repair_on_import` path (facet welding, unconnected-facet
+removal, normal direction/value fixup, volume-sign check) — no repair
+algorithm reimplemented, zero new C++ repair logic. `SlicingEngine
+.repairMesh` round-trips the in-memory mesh through a temp binary STL
+via the already-existing `storeSTL` wrapper, so repair runs through the
+exact same code path a real file re-import-with-repair would use.
+`ProjectDocument.repairSelection()` mirrors `performCut`'s "new object
+version, original preserved" precedent exactly: replaces the selected
+object with a brand-new object/mesh id; the pre-repair mesh/object are
+never deleted from `meshes`/`objects` (AGENTS.md §12: never silently
+auto-repair). Wired to a real "Repair Mesh" item in the toolbar's More
+menu (`document.selection == nil` disables it, same convention as
+Auto-Orient/Modifiers/Layer Heights). Tests: `MeshRepairTests` — a
+direct bridge-level test proves repair actually removes a real,
+deliberately-constructed disconnected stray facet (13 -> 12 triangles,
+not a fabricated expectation); a full `ProjectDocument` round-trip test
+confirms the repaired object/mesh get new ids and the original mesh
+entry survives in `document.meshes`. Full suite: 193/193 (191 prior +
+2 new), run clean after the change.
+
+## Last completed task (latest, this session)
 **P5-002/P5-003: Real embedded MakerWorld browsing + downloads.**
 User directive: "bambu studio is opensource, do whatever they are
 doing." Replaced the browser-delegation-only `MakerWorldLinks` with a

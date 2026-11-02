@@ -181,6 +181,13 @@ struct ContentView: View {
                         .disabled(document.selection == nil)
                     Button("Modifiers…") { showingModifiers = true }
                         .disabled(document.selection == nil)
+                    // P4-002: explicit, user-triggered, non-destructive
+                    // repair (SlicingEngine.repairMesh); replaces the
+                    // selected object with a repaired version, original
+                    // mesh preserved in `meshes` (AGENTS.md §12: never
+                    // auto-repair).
+                    Button("Repair Mesh", action: document.repairSelection)
+                        .disabled(document.selection == nil)
                     Button("Plates (\(document.plates.count))…") { showingPlatePreview = true }
                     Divider()
                     // P5-001/P5-002: MakerWorld integration — Sign In

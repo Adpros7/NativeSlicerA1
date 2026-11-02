@@ -35,6 +35,14 @@ NSA1Mesh *nsa1_load_stl_mesh(const char *path);
 /// Releases a mesh returned by `nsa1_load_stl_mesh`. Safe to call with NULL.
 void nsa1_free_mesh(NSA1Mesh *mesh);
 
+/// Like `nsa1_load_stl_mesh`, but runs upstream's real repair path
+/// (`TriangleMesh::ReadSTLFile(path, repair=true)` ->
+/// `trianglemesh_repair_on_import`: facet welding, unconnected-facet
+/// removal, normal direction/value fixup, volume-sign check). Returns a
+/// NEW mesh (free with `nsa1_free_mesh`); P4-002 explicit user-triggered
+/// repair. Returns NULL on failure.
+NSA1Mesh *nsa1_load_stl_mesh_repaired(const char *path);
+
 /// Writes a single triangle mesh to a binary STL file via
 /// TriangleMesh::write_binary (P1-010). Returns 0 on success, -1 on
 /// failure (out_error is set to a newly allocated message).

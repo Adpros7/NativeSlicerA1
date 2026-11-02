@@ -563,6 +563,36 @@ final class ProjectDocument: ObservableObject {
         }
     }
 
+    /// P4-002: explicit, user-triggered, non-destructive mesh repair via
+    /// the real engine's `TriangleMesh::ReadSTLFile(repair: true)` path
+    /// (`SlicingEngine.repairMesh`) — not a reimplementation, and never
+    /// run automatically on import (AGENTS.md §12). Mirrors `performCut`'s
+    /// "new object version, original preserved" precedent: the repaired
+    /// mesh gets its own id/object, the pre-repair mesh/object stay in
+    /// `meshes` unreferenced rather than deleted, so nothing is lost even
+    /// without a dedicated undo stack for this one-shot action.
+    func repairSelection() {
+        guard let selectedID = selection,
+              let index = objects.firstIndex(where: { $0.id == selectedID }),
+              let mesh = meshes[objects[index].sourceMeshID]
+        else { return }
+        do {
+            let repaired = try SlicingEngine.repairMesh(mesh)
+            let meshID = UUID()
+            meshes[meshID] = repaired
+            let old = objects[index]
+            objects[index] = SceneObject(
+                sourceMeshID: meshID, transform: old.transform,
+                cutGroupID: old.cutGroupID, plateID: old.plateID)
+            objects[index].layerHeightRanges = old.layerHeightRanges
+            objects[index].modifiers = old.modifiers
+            selection = objects[index].id
+            lastError = nil
+        } catch {
+            lastError = "Repair failed: \(error)"
+        }
+    }
+
     /// Saves the scene as a 3MF project file via the real engine's
     /// `store_3mf`, including resolved profile config (P3-003) and
     /// TriangleSelector-backed support paint (P3-005), so both profile
